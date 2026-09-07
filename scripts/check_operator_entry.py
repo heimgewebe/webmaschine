@@ -287,6 +287,8 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         errors.append("capabilityLocators.audioTranscription.entryArgvPrefix must name the canonical ASR entry")
     if transcription.get("defaultOperation") != "transcribe":
         errors.append("capabilityLocators.audioTranscription.defaultOperation must be transcribe")
+    if transcription.get("readinessOperation") != "doctor":
+        errors.append("capabilityLocators.audioTranscription.readinessOperation must be doctor")
     if transcription.get("policyResolution") != "read_at_execution_time":
         errors.append("capabilityLocators.audioTranscription.policyResolution must be read_at_execution_time")
     if transcription.get("consumerEnginePinningAllowed") is not False:

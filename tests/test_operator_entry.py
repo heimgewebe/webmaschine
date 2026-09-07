@@ -320,6 +320,7 @@ class OperatorEntryTests(unittest.TestCase):
             )
             locator = contract["capabilityLocators"]["audioTranscription"]
             locator["runbook"] = "${HOME}/repos/heim-pc/runbooks/other.md"
+            locator["readinessOperation"] = "setup"
             locator["reusePolicy"]["sharedRuntimeCacheRoot"] = "${HOME}/.cache/per-request-asr"
             locator["reusePolicy"]["readinessBeforeSetup"] = False
             locator["reusePolicy"]["setupOnlyWhenReadinessReportsMissing"] = False
@@ -333,6 +334,10 @@ class OperatorEntryTests(unittest.TestCase):
             self.assertFalse(receipt["valid"])
             self.assertIn(
                 "capabilityLocators.audioTranscription.runbook must name the canonical ASR runbook",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "capabilityLocators.audioTranscription.readinessOperation must be doctor",
                 receipt["errors"],
             )
             self.assertIn(
