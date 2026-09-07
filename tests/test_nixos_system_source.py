@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "d843626549f2642d27e8b3bc89d3fbbd66c847fc05ae27747978f5fba2338538"
+SOURCE_SNAPSHOT_SHA256 = "b4bf9a2f403497cf62f031e8f8567c057470ac942ddd38930d296894328cf676"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 
 
@@ -155,76 +155,105 @@ class T(unittest.TestCase):
         self.assertIn("jq -cn", module)
         self.assertIn("su -s /bin/sh -c 'grabowski-demo-operator status' alex", integration)
 
-    def _firstboot_script(self):
+    def _firstboot_program(self):
         host = (SOURCE / "hosts/heim-pc/default.nix").read_text()
         match = re.search(
-            r"  firstBootCredentialScript = ''\n(?P<body>.*?)\n  '';\nin\n\{",
+            r'  firstBootCredentialProgram = pkgs\.writeText "heim-pc-firstboot-credentials\.py" \'\'\n(?P<body>.*?)\n  \'\';\nin\n\{',
             host,
             re.S,
         )
         self.assertIsNotNone(match)
-        return textwrap.dedent(match.group("body")).replace("''${", "${")
+        return textwrap.dedent(match.group("body"))
 
-    def _firstboot_fixture(self, root, initial_state="L"):
+    @staticmethod
+    def _write_shadow(root, password_hash):
+        shadow = root / "shadow"
+        shadow.write_text(f"alex:{password_hash}:1:0:99999:7:::\n")
+        shadow.chmod(0o600)
+        return shadow
+
+    def _firstboot_fixture(self, root, initial_hash="!"):
+        persist = root / "persist"
+        persist.mkdir(mode=0o755)
+        shadow = self._write_shadow(root, initial_hash)
         bin_dir = root / "bin"
         bin_dir.mkdir()
-        state_file = root / "account-state"
-        state_file.write_text(initial_state + "\n")
         chpasswd_log = root / "chpasswd.log"
-
-        passwd = bin_dir / "passwd"
-        passwd.write_text(textwrap.dedent("""\
-            #!/bin/sh
-            set -eu
-            [ "${1:-}" = "-S" ] && [ "${2:-}" = "alex" ] || exit 64
-            state="$(cat "$HEIM_PC_TEST_ACCOUNT_STATE")"
-            printf 'alex %s 2026-09-07 0 99999 7 -1\n' "$state"
-        """))
-        passwd.chmod(0o700)
 
         chpasswd = bin_dir / "chpasswd"
         chpasswd.write_text(textwrap.dedent("""\
-            #!/bin/sh
-            set -eu
-            [ "${1:-}" = "-e" ] || exit 64
-            IFS= read -r line || exit 65
-            case "$line" in
-              alex:\$*) ;;
-              *) exit 66 ;;
-            esac
-            printf 'called\n' >> "$HEIM_PC_TEST_CHPASSWD_LOG"
-            printf 'P\n' > "$HEIM_PC_TEST_ACCOUNT_STATE"
+            #!/usr/bin/python3
+            import os
+            import sys
+
+            if sys.argv[1:] != ["-e"]:
+                raise SystemExit(64)
+            line = sys.stdin.buffer.readline().decode("ascii").rstrip("\\n")
+            if sys.stdin.buffer.read():
+                raise SystemExit(65)
+            try:
+                user, password_hash = line.split(":", 1)
+            except ValueError:
+                raise SystemExit(66)
+            if user != "alex" or not password_hash.startswith("$"):
+                raise SystemExit(67)
+            path = os.environ["HEIM_PC_TEST_SHADOW"]
+            rows = []
+            found = 0
+            with open(path, encoding="utf-8") as handle:
+                for row in handle:
+                    fields = row.rstrip("\\n").split(":")
+                    if fields[0] == "alex":
+                        fields[1] = password_hash
+                        found += 1
+                    rows.append(":".join(fields))
+            if found != 1:
+                raise SystemExit(68)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("\\n".join(rows) + "\\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            with open(os.environ["HEIM_PC_TEST_CHPASSWD_LOG"], "a", encoding="utf-8") as handle:
+                handle.write("called\\n")
+            chmod_dir = os.environ.get("HEIM_PC_TEST_AFTER_CHPASSWD_CHMOD_DIR")
+            if chmod_dir:
+                os.chmod(chmod_dir, 0o500)
         """))
         chpasswd.chmod(0o700)
-        return bin_dir, state_file, chpasswd_log
+        return bin_dir, shadow, chpasswd_log
 
     def _stage_firstboot_secret(self, root, content, mode=0o600):
-        secret_dir = root / "persist/secrets/heim-pc/first-boot"
-        secret_dir.mkdir(parents=True, exist_ok=True)
-        secret_dir.chmod(0o700)
+        persist = root / "persist"
+        secrets = persist / "secrets"
+        namespace = secrets / "heim-pc"
+        secret_dir = namespace / "first-boot"
+        for directory in (secrets, namespace, secret_dir):
+            directory.mkdir(exist_ok=True)
+            directory.chmod(0o700)
         secret = secret_dir / "alex-password-hash"
         secret.write_text(content)
         secret.chmod(mode)
         return secret
 
-    def _run_firstboot_script(self, root, bin_dir, state_file, chpasswd_log):
-        secret_dir = root / "persist/secrets/heim-pc/first-boot"
-        marker_dir = root / "persist/heim-pc/bootstrap"
-        script = self._firstboot_script()
-        script = script.replace(
-            "/persist/secrets/heim-pc/first-boot", str(secret_dir)
+    def _run_firstboot_program(self, root, bin_dir, shadow, chpasswd_log, extra_env=None):
+        program = self._firstboot_program()
+        program = program.replace(
+            'PERSIST_PATH = "/persist"', f'PERSIST_PATH = {str(root / "persist")!r}'
         ).replace(
-            "/persist/heim-pc/bootstrap", str(marker_dir)
+            'SHADOW_PATH = "/etc/shadow"', f'SHADOW_PATH = {str(shadow)!r}'
         ).replace(
-            '[ "$expected_owner" = "0:0" ] || fail "credential bootstrap is not running as root"',
-            ': # test harness runs as the current unprivileged file owner',
+            "EXPECTED_UID = 0", f"EXPECTED_UID = {os.getuid()}"
+        ).replace(
+            "EXPECTED_GID = 0", f"EXPECTED_GID = {os.getgid()}"
         )
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
-        env["HEIM_PC_TEST_ACCOUNT_STATE"] = str(state_file)
+        env["HEIM_PC_TEST_SHADOW"] = str(shadow)
         env["HEIM_PC_TEST_CHPASSWD_LOG"] = str(chpasswd_log)
+        if extra_env:
+            env.update(extra_env)
         return subprocess.run(
-            ["/usr/bin/bash", "-c", script],
+            ["/usr/bin/python3", "-c", program],
             text=True,
             capture_output=True,
             env=env,
@@ -233,8 +262,13 @@ class T(unittest.TestCase):
 
     @staticmethod
     def _synthetic_password_hash():
-        # Structurally valid test material only; not a reusable login credential.
-        return "$6$synthetic-test-fixture$" + ("x" * 64) + "\n"
+        # Canonical-shape yescrypt fixture only; it is not a reusable credential.
+        return "$y$j9T$" + ("s" * 22) + "$" + ("x" * 43) + "\n"
+
+    @staticmethod
+    def _shadow_hash(path):
+        fields = path.read_text().splitlines()[0].split(":")
+        return fields[1]
 
     @staticmethod
     def _chpasswd_call_count(path):
@@ -244,103 +278,168 @@ class T(unittest.TestCase):
         host = (SOURCE / "hosts/heim-pc/default.nix").read_text()
         readme = (SOURCE / "README.md").read_text()
         self.assertIn("firstBootCredentialBootstrap =", host)
+        self.assertIn("(heimPcProfile.physical or false)", host)
+        self.assertIn("(heimPcProfile.desktop or false)", host)
         self.assertIn('builtins.hasAttr "/persist" config.fileSystems', host)
         self.assertIn("users.mutableUsers = true;", host)
         self.assertIn("heim-pc-firstboot-credentials", host)
         self.assertIn("services.getty.autologinUser = lib.mkIf (", host)
         self.assertIn("!(heimPcProfile.physical or false)", host)
-        self.assertIn('[ "$expected_owner" = "0:0" ] || fail "credential bootstrap is not running as root"', host)
+        self.assertIn('requiredBy = [ "systemd-user-sessions.service" "display-manager.service" ];', host)
+        self.assertIn('before = [ "systemd-user-sessions.service" "display-manager.service" ];', host)
         self.assertIn('User = "root";', host)
         self.assertIn('Group = "root";', host)
-        self.assertIn('requiredBy = [ "multi-user.target" "display-manager.service" ];', host)
-        self.assertIn('exact_path "$secret_dir"', host)
-        self.assertIn('validate_marker_dir', host)
-        self.assertIn('secret_path="$secret_dir/alex-password-hash"', host)
-        self.assertIn('marker_path="$marker_dir/alex-password-initialized"', host)
-        self.assertIn("chpasswd -e", host)
-        self.assertIn('rm -- "$secret_path"', host)
-        self.assertIn('fail "marker missing for already-passworded alex account"', host)
+        self.assertIn("YESCRYPT_RE", host)
+        self.assertIn("NOFOLLOW = os.O_NOFOLLOW", host)
+        self.assertIn("dir_fd=", host)
+        self.assertIn("os.fsync", host)
+        self.assertIn("timeout=10", host)
+        self.assertIn("write_all(marker_fd, MARKER_BYTES)", host)
+        self.assertIn('current_hash not in {"!", "!!", "*"}', host)
+        self.assertIn('shadow_hash() != password_hash', host)
+        self.assertIn('os.unlink("alex-password-hash", dir_fd=secret_dir_fd)', host)
+        self.assertIn('if marker != MARKER_BYTES:', host)
+        self.assertNotIn("passwd -S", host)
         self.assertNotIn("hashedPasswordFile", host)
         self.assertNotRegex(
             host,
             r"\b(?:initialHashedPassword|initialPassword|hashedPassword|password)\s*=",
         )
+        self.assertIn("canonical yescrypt", readme)
+        self.assertIn("systemd-user-sessions.service", readme)
+        self.assertIn("descriptor-relative", readme)
         self.assertIn("separately authorized disposable installation", readme)
-        self.assertIn("VM console autologin is explicitly not accepted", readme)
         self.assertIn("The repository task does not stage this file", readme)
 
-    def test_firstboot_credential_script_rejects_missing_invalid_and_unsafe_secret(self):
+    def test_firstboot_credential_program_rejects_missing_malformed_unsafe_and_symlink_secret(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bin_dir, state_file, log = self._firstboot_fixture(root)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
 
-            missing = self._run_firstboot_script(root, bin_dir, state_file, log)
+            missing = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(missing.returncode, 0)
-            self.assertIn("secret directory is missing or unsafe", missing.stderr)
-            self.assertEqual(state_file.read_text().strip(), "L")
+            self.assertIn("bootstrap secrets directory is missing or unsafe", missing.stderr)
+            self.assertEqual(self._shadow_hash(shadow), "!")
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
             self._stage_firstboot_secret(root, "not-a-password-hash\n")
-            invalid = self._run_firstboot_script(root, bin_dir, state_file, log)
+            invalid = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(invalid.returncode, 0)
-            self.assertIn("not an accepted password hash", invalid.stderr)
-            self.assertEqual(state_file.read_text().strip(), "L")
+            self.assertIn("not canonical yescrypt", invalid.stderr)
+            self.assertEqual(self._shadow_hash(shadow), "!")
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+            self._stage_firstboot_secret(root, "$6$short$still-not-valid\n")
+            crypt_like = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(crypt_like.returncode, 0)
+            self.assertIn("not canonical yescrypt", crypt_like.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
             secret = self._stage_firstboot_secret(
                 root, self._synthetic_password_hash(), mode=0o644
             )
-            unsafe = self._run_firstboot_script(root, bin_dir, state_file, log)
+            unsafe = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(unsafe.returncode, 0)
-            self.assertIn("secret owner or mode mismatch", unsafe.stderr)
+            self.assertIn("bootstrap secret mode mismatch", unsafe.stderr)
             self.assertTrue(secret.exists())
-            self.assertEqual(state_file.read_text().strip(), "L")
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
-    def test_firstboot_credential_script_is_single_use_and_non_overwriting(self):
+            target = root / "secret-target"
+            target.write_text(self._synthetic_password_hash())
+            target.chmod(0o600)
+            secret.unlink()
+            secret.symlink_to(target)
+            symlinked = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(symlinked.returncode, 0)
+            self.assertIn("bootstrap secret is missing or unsafe", symlinked.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+    def test_firstboot_credential_program_is_single_use_and_marker_is_exact(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bin_dir, state_file, log = self._firstboot_fixture(root)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
             secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
 
-            first = self._run_firstboot_script(root, bin_dir, state_file, log)
+            first = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertEqual(first.returncode, 0, first.stderr)
             marker = root / "persist/heim-pc/bootstrap/alex-password-initialized"
-            self.assertEqual(state_file.read_text().strip(), "P")
+            self.assertEqual(self._shadow_hash(shadow), self._synthetic_password_hash().strip())
             self.assertFalse(secret.exists())
-            self.assertTrue(marker.is_file())
+            self.assertEqual(
+                marker.read_bytes(), b"schema_version=1\nuser=alex\nstate=initialized\n"
+            )
             self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
             self.assertEqual(self._chpasswd_call_count(log), 1)
 
-            repeat = self._run_firstboot_script(root, bin_dir, state_file, log)
+            # Marker means bootstrap is finished. A later password lock/rotation
+            # must survive reboot and must not invoke chpasswd again.
+            self._write_shadow(root, "!" + self._synthetic_password_hash().strip())
+            repeat = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertEqual(repeat.returncode, 0, repeat.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 1)
 
             restaged = self._stage_firstboot_secret(
                 root, self._synthetic_password_hash()
             )
-            rejected = self._run_firstboot_script(root, bin_dir, state_file, log)
+            rejected = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(rejected.returncode, 0)
-            self.assertIn("secret remains after initialization", rejected.stderr)
+            self.assertIn("bootstrap secret remains after initialization", rejected.stderr)
             self.assertTrue(restaged.exists())
-            self.assertEqual(state_file.read_text().strip(), "P")
             self.assertEqual(self._chpasswd_call_count(log), 1)
 
-    def test_firstboot_credential_script_never_overwrites_password_without_marker(self):
+            restaged.unlink()
+            marker.write_text("corrupt\n")
+            marker.chmod(0o600)
+            corrupted = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(corrupted.returncode, 0)
+            self.assertIn("bootstrap marker content mismatch", corrupted.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 1)
+
+    def test_firstboot_credential_program_never_overwrites_nonvirgin_account_without_marker(self):
+        for existing in (
+            self._synthetic_password_hash().strip(),
+            "!" + self._synthetic_password_hash().strip(),
+        ):
+            with self.subTest(existing=existing[:8]):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    bin_dir, shadow, log = self._firstboot_fixture(root, initial_hash=existing)
+                    secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+
+                    result = self._run_firstboot_program(root, bin_dir, shadow, log)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("alex account is not in the virgin locked state", result.stderr)
+                    self.assertEqual(self._shadow_hash(shadow), existing)
+                    self.assertTrue(secret.exists())
+                    self.assertEqual(self._chpasswd_call_count(log), 0)
+
+    def test_firstboot_post_password_failure_is_recovery_required_and_non_replaying(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            bin_dir, state_file, log = self._firstboot_fixture(root, initial_state="P")
+            bin_dir, shadow, log = self._firstboot_fixture(root)
             secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            secret_dir = secret.parent
 
-            result = self._run_firstboot_script(root, bin_dir, state_file, log)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("marker missing for already-passworded alex account", result.stderr)
-            self.assertEqual(state_file.read_text().strip(), "P")
-            self.assertTrue(secret.exists())
+            first = self._run_firstboot_program(
+                root,
+                bin_dir,
+                shadow,
+                log,
+                extra_env={"HEIM_PC_TEST_AFTER_CHPASSWD_CHMOD_DIR": str(secret_dir)},
+            )
+            self.assertNotEqual(first.returncode, 0)
+            self.assertIn("consuming bootstrap secret failed", first.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 1)
+            self.assertEqual(self._shadow_hash(shadow), self._synthetic_password_hash().strip())
             self.assertFalse(
                 (root / "persist/heim-pc/bootstrap/alex-password-initialized").exists()
             )
-            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+            secret_dir.chmod(0o700)
+            second = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(second.returncode, 0)
+            self.assertIn("alex account is not in the virgin locked state", second.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 1)
 
     def test_nix_and_python_provenance_contracts_both_require_40_hex(self):
         flake = (SOURCE / "flake.nix").read_text()
