@@ -51,6 +51,21 @@ class OperatorEntryTests(unittest.TestCase):
             "${HOME}/repos/heim-pc/manifest/asr-engine-policy.v1.json",
         )
         self.assertEqual(
+            transcription["runbook"],
+            "${HOME}/repos/heim-pc/runbooks/asr-local-transcription.md",
+        )
+        reuse_policy = transcription["reusePolicy"]
+        self.assertTrue(reuse_policy["resolveBeforeSetup"])
+        self.assertTrue(reuse_policy["readinessBeforeSetup"])
+        self.assertTrue(reuse_policy["setupOnlyWhenReadinessReportsMissing"])
+        self.assertEqual(
+            reuse_policy["sharedRuntimeCacheRoot"],
+            "${HOME}/.local/cache/heim-pc/asr-open-engine",
+        )
+        self.assertFalse(reuse_policy["perRequestVirtualenvAllowed"])
+        self.assertFalse(reuse_policy["perRequestModelCacheAllowed"])
+        self.assertFalse(reuse_policy["perRequestPackageInstallAllowed"])
+        self.assertEqual(
             transcription["entryArgvPrefix"],
             ["python3", "${HOME}/repos/heim-pc/scripts/asr_engine.py"],
         )
@@ -296,6 +311,56 @@ class OperatorEntryTests(unittest.TestCase):
                 "capabilityLocators.audioTranscription.cloudOrMeteredUseAuthorizedByLocator must remain false",
                 receipt["errors"],
             )
+
+    def test_checker_rejects_transcription_reuse_policy_that_allows_per_request_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            locator = contract["capabilityLocators"]["audioTranscription"]
+            locator["runbook"] = "${HOME}/repos/heim-pc/runbooks/other.md"
+            locator["readinessOperation"] = "setup"
+            locator["reusePolicy"]["sharedRuntimeCacheRoot"] = "${HOME}/.cache/per-request-asr"
+            locator["reusePolicy"]["readinessBeforeSetup"] = False
+            locator["reusePolicy"]["setupOnlyWhenReadinessReportsMissing"] = False
+            locator["reusePolicy"]["perRequestVirtualenvAllowed"] = True
+            locator["reusePolicy"]["perRequestModelCacheAllowed"] = True
+            locator["reusePolicy"]["perRequestPackageInstallAllowed"] = True
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "capabilityLocators.audioTranscription.runbook must name the canonical ASR runbook",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "capabilityLocators.audioTranscription.readinessOperation must be doctor",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot must name the canonical shared ASR cache",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "capabilityLocators.audioTranscription.reusePolicy.readinessBeforeSetup must be true",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "capabilityLocators.audioTranscription.reusePolicy.setupOnlyWhenReadinessReportsMissing must be true",
+                receipt["errors"],
+            )
+            for flag in (
+                "perRequestVirtualenvAllowed",
+                "perRequestModelCacheAllowed",
+                "perRequestPackageInstallAllowed",
+            ):
+                self.assertIn(
+                    f"capabilityLocators.audioTranscription.reusePolicy.{flag} must remain false",
+                    receipt["errors"],
+                )
 
     def test_checker_accepts_additional_generic_locator_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

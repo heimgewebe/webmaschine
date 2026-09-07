@@ -241,11 +241,43 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         errors.append("capabilityLocators.audioTranscription.authority is invalid")
     if transcription.get("authorityKind") != "capability_locator_only":
         errors.append("capabilityLocators.audioTranscription.authorityKind must remain locator-only")
-    for field in ("repository", "architecture", "policy"):
+    for field in ("repository", "architecture", "policy", "runbook"):
         _require_host_path(
             transcription.get(field),
             f"capabilityLocators.audioTranscription.{field}",
             errors,
+        )
+    expected_asr_runbook = "${HOME}/repos/heim-pc/runbooks/asr-local-transcription.md"
+    if transcription.get("runbook") != expected_asr_runbook:
+        errors.append("capabilityLocators.audioTranscription.runbook must name the canonical ASR runbook")
+    reuse_policy = _require_object(
+        transcription.get("reusePolicy"),
+        "capabilityLocators.audioTranscription.reusePolicy",
+        errors,
+    )
+    for flag in (
+        "resolveBeforeSetup",
+        "readinessBeforeSetup",
+        "setupOnlyWhenReadinessReportsMissing",
+    ):
+        if reuse_policy.get(flag) is not True:
+            errors.append(f"capabilityLocators.audioTranscription.reusePolicy.{flag} must be true")
+    for flag in (
+        "perRequestVirtualenvAllowed",
+        "perRequestModelCacheAllowed",
+        "perRequestPackageInstallAllowed",
+    ):
+        if reuse_policy.get(flag) is not False:
+            errors.append(f"capabilityLocators.audioTranscription.reusePolicy.{flag} must remain false")
+    _require_host_path(
+        reuse_policy.get("sharedRuntimeCacheRoot"),
+        "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot",
+        errors,
+    )
+    expected_asr_cache_root = "${HOME}/.local/cache/heim-pc/asr-open-engine"
+    if reuse_policy.get("sharedRuntimeCacheRoot") != expected_asr_cache_root:
+        errors.append(
+            "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot must name the canonical shared ASR cache"
         )
     expected_asr_entry = [
         "python3",
@@ -255,6 +287,8 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         errors.append("capabilityLocators.audioTranscription.entryArgvPrefix must name the canonical ASR entry")
     if transcription.get("defaultOperation") != "transcribe":
         errors.append("capabilityLocators.audioTranscription.defaultOperation must be transcribe")
+    if transcription.get("readinessOperation") != "doctor":
+        errors.append("capabilityLocators.audioTranscription.readinessOperation must be doctor")
     if transcription.get("policyResolution") != "read_at_execution_time":
         errors.append("capabilityLocators.audioTranscription.policyResolution must be read_at_execution_time")
     if transcription.get("consumerEnginePinningAllowed") is not False:

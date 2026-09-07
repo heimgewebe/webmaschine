@@ -2,7 +2,7 @@
 id: agents.entry
 role: action
 status: canonical
-last_reviewed: 2026-07-18
+last_reviewed: 2026-09-07
 depends_on:
   - operatorium-entry
   - home-entry
@@ -53,6 +53,9 @@ Der kanonische Maschinenvertrag ist `manifest/operator-entry.v1.json`. Die lokal
 
 * Keine privaten Inhalte, Browserprofile, Keyrings, Agent-Runtime-Historien, Tokens, SSH-Schlüssel oder Secret-Flächen lesen oder ausgeben.
 * Kein breiter Scan von `/home/alex`; zuerst den installierten Maschinenvertrag und dessen gezielte Lokatoren verwenden.
+* **Capability-first:** Wenn ein Auftrag einer in `manifest/operator-entry.v1.json` deklarierten Capability entspricht, zuerst den installierten Capability-Locator auflösen und dessen kanonischen Einstieg verwenden, statt pro Auftrag eigene Werkzeuge, virtuelle Umgebungen oder Modellcaches aufzubauen. Für Audio-Transkription ist der bevorzugte Grabowski-Leseweg `grabowski_host_capability_resolve(intent="audio.transcribe")`.
+* **Readiness vor Setup:** Bei Audio-Transkription zuerst die zurückgegebene kanonische ASR-Route mit `doctor` prüfen. Nur wenn diese frische Prüfung eine fehlende lokale Runtime oder einen fehlenden Modellcache belegt, den kanonischen `setup`-Pfad einmalig verwenden. Kein per-Auftrag-`pip install`, keine per-Auftrag-venv und kein separater Modellcache. Der gemeinsame lokale Runtime-/Modellcache bleibt unter `~/.local/cache/heim-pc/asr-open-engine/`.
+* Für Audio-Transkription keine Engine im Consumer pinnen und nicht automatisch zu Cloud-/Metered-Diensten eskalieren; die Engine- und Kostenentscheidung bleibt beim zur Ausführungszeit gelesenen ASR-Policy-Vertrag. Das Runbook `runbooks/asr-local-transcription.md` beschreibt Diagnose, Wiederverwendung und Verifikation.
 * Keine Home-Dateien ändern, wenn der Auftrag nur dieses Repository betrifft.
 * Keine zweite Systemkarte in `heim-pc` aufbauen; für systemweite Zwecke, Grenzen, Wahrheitszuständigkeiten, Beziehungen und Einstiegspunkte auf den Systemkatalog verweisen.
 * Bei gewöhnlicher Einzelrepo-Codearbeit den Systemkatalog nicht pauschal laden.
