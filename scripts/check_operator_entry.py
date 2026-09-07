@@ -247,6 +247,9 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
             f"capabilityLocators.audioTranscription.{field}",
             errors,
         )
+    expected_asr_runbook = "${HOME}/repos/heim-pc/runbooks/asr-local-transcription.md"
+    if transcription.get("runbook") != expected_asr_runbook:
+        errors.append("capabilityLocators.audioTranscription.runbook must name the canonical ASR runbook")
     reuse_policy = _require_object(
         transcription.get("reusePolicy"),
         "capabilityLocators.audioTranscription.reusePolicy",
@@ -271,6 +274,11 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot",
         errors,
     )
+    expected_asr_cache_root = "${HOME}/.local/cache/heim-pc/asr-open-engine"
+    if reuse_policy.get("sharedRuntimeCacheRoot") != expected_asr_cache_root:
+        errors.append(
+            "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot must name the canonical shared ASR cache"
+        )
     expected_asr_entry = [
         "python3",
         "${HOME}/repos/heim-pc/scripts/asr_engine.py",

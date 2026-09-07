@@ -319,6 +319,8 @@ class OperatorEntryTests(unittest.TestCase):
                 (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
             )
             locator = contract["capabilityLocators"]["audioTranscription"]
+            locator["runbook"] = "${HOME}/repos/heim-pc/runbooks/other.md"
+            locator["reusePolicy"]["sharedRuntimeCacheRoot"] = "${HOME}/.cache/per-request-asr"
             locator["reusePolicy"]["readinessBeforeSetup"] = False
             locator["reusePolicy"]["setupOnlyWhenReadinessReportsMissing"] = False
             locator["reusePolicy"]["perRequestVirtualenvAllowed"] = True
@@ -329,6 +331,14 @@ class OperatorEntryTests(unittest.TestCase):
             with patch.object(checker, "CONTRACT_PATH", contract_path):
                 receipt = checker.check(home=tmp_path, require_installed=False)
             self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "capabilityLocators.audioTranscription.runbook must name the canonical ASR runbook",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot must name the canonical shared ASR cache",
+                receipt["errors"],
+            )
             self.assertIn(
                 "capabilityLocators.audioTranscription.reusePolicy.readinessBeforeSetup must be true",
                 receipt["errors"],
