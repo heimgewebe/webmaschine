@@ -297,10 +297,28 @@
       ]
     },
     {
+      "id": "native_capability_discovery",
+      "surface": "grabowski_catalog",
+      "operation": "prefer_existing_typed_surface",
+      "purpose": "reuse an existing native typed Grabowski capability before consulting host-local locators; discovery alone establishes neither readiness nor execution authority"
+    },
+    {
       "id": "capability_resolution",
       "surface": "contract",
-      "operation": "resolve_capability_locator_if_present",
-      "purpose": "map generic host intents to canonical capability authorities without pinning provider, model or current runtime state"
+      "operation": "resolve_host_capability_locator_if_no_native_surface",
+      "statusPolicy": {
+        "resolved": "select_host_authority",
+        "not_found": "continue_to_declared_specialized_routes",
+        "blocked": "stop_without_fallback"
+      },
+      "purpose": "map a host-local intent to its canonical authority only when no native typed surface fits; blocked resolution may not fall through"
+    },
+    {
+      "id": "specialized_route_resolution",
+      "surface": "contract",
+      "operation": "follow_declared_specialized_route_if_present",
+      "precondition": "host_capability_status_not_found",
+      "purpose": "reuse an already declared transfer, managed-build or other specialized route before considering new infrastructure"
     },
     {
       "id": "source_resolution",
@@ -312,7 +330,7 @@
       "id": "target_specific_live_state",
       "surface": "primary_sources",
       "operation": "read_live_state_before_action",
-      "purpose": "verify exact repository, pull request, CI, lease, task, process and runtime state before mutation"
+      "purpose": "verify the selected authority's live readiness and policy plus exact repository, pull request, CI, lease, task, process and runtime state before action; not-ready is not not-found and does not justify parallel replacement"
     }
   ],
   "truthSources": {

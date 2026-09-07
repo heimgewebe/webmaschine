@@ -214,10 +214,41 @@ class OperatorEntryTests(unittest.TestCase):
             "permission_to_delete_worktree_or_cache_payloads",
             managed["doesNotEstablish"],
         )
-        entry_ids = {item["id"] for item in contract["entrySequence"]}
+        entry_ids = [item["id"] for item in contract["entrySequence"]]
         self.assertIn("operator_context", entry_ids)
-        self.assertIn("capability_resolution", entry_ids)
-        self.assertIn("target_specific_live_state", entry_ids)
+        discovery_order = [
+            "scope_classification",
+            "native_capability_discovery",
+            "capability_resolution",
+            "specialized_route_resolution",
+            "source_resolution",
+            "target_specific_live_state",
+        ]
+        self.assertEqual(
+            [item for item in entry_ids if item in discovery_order],
+            discovery_order,
+        )
+        entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
+        self.assertEqual(
+            entry_by_id["native_capability_discovery"]["operation"],
+            "prefer_existing_typed_surface",
+        )
+        self.assertEqual(
+            entry_by_id["capability_resolution"]["statusPolicy"],
+            {
+                "resolved": "select_host_authority",
+                "not_found": "continue_to_declared_specialized_routes",
+                "blocked": "stop_without_fallback",
+            },
+        )
+        self.assertEqual(
+            entry_by_id["specialized_route_resolution"]["precondition"],
+            "host_capability_status_not_found",
+        )
+        self.assertIn(
+            "not-ready is not not-found",
+            entry_by_id["target_specific_live_state"]["purpose"],
+        )
         self.assertIn("stableEcosystemSemantics", contract["truthSources"])
         self.assertIn("executionRuntimeLeases", contract["truthSources"])
         repository_context = contract["truthSources"]["repositoryContext"]
@@ -361,6 +392,33 @@ class OperatorEntryTests(unittest.TestCase):
                     f"capabilityLocators.audioTranscription.reusePolicy.{flag} must remain false",
                     receipt["errors"],
                 )
+
+    def test_checker_rejects_discovery_fallback_on_blocked_host_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
+            entry_by_id["capability_resolution"]["statusPolicy"]["blocked"] = (
+                "continue_to_declared_specialized_routes"
+            )
+            entry_by_id["specialized_route_resolution"]["precondition"] = (
+                "host_capability_status_unresolved"
+            )
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "capability_resolution.statusPolicy must allow fallback only on explicit not_found",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "specialized_route_resolution.precondition must require host capability not_found",
+                receipt["errors"],
+            )
 
     def test_checker_accepts_additional_generic_locator_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
