@@ -170,7 +170,10 @@ in
 
   # The console autologin exists only for the hardware-neutral VM proof. It is
   # never accepted as physical credential evidence.
-  services.getty.autologinUser = lib.mkIf (!(heimPcProfile.desktop or false)) "alex";
+  services.getty.autologinUser = lib.mkIf (
+    !(heimPcProfile.physical or false)
+    && !(heimPcProfile.desktop or false)
+  ) "alex";
 
   systemd.services.heim-pc-firstboot-credentials = lib.mkIf firstBootCredentialBootstrap {
     description = "Fail-closed one-shot Heim-PC credential bootstrap";

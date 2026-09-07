@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "25e8ce238fd5969ec0b40ba226a2b7813aaaeb8632ecbf9d8cad7cb4762eafb8"
+SOURCE_SNAPSHOT_SHA256 = "d843626549f2642d27e8b3bc89d3fbbd66c847fc05ae27747978f5fba2338538"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 
 
@@ -247,6 +247,8 @@ class T(unittest.TestCase):
         self.assertIn('builtins.hasAttr "/persist" config.fileSystems', host)
         self.assertIn("users.mutableUsers = true;", host)
         self.assertIn("heim-pc-firstboot-credentials", host)
+        self.assertIn("services.getty.autologinUser = lib.mkIf (", host)
+        self.assertIn("!(heimPcProfile.physical or false)", host)
         self.assertIn('[ "$expected_owner" = "0:0" ] || fail "credential bootstrap is not running as root"', host)
         self.assertIn('User = "root";', host)
         self.assertIn('Group = "root";', host)
