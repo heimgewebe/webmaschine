@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "be38b9c8a3021f88764dc5af25b692d446a7ba2c371b50cfc034922dca2649fe"
+SOURCE_SNAPSHOT_SHA256 = "25e8ce238fd5969ec0b40ba226a2b7813aaaeb8632ecbf9d8cad7cb4762eafb8"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 
 
@@ -215,6 +215,9 @@ class T(unittest.TestCase):
             "/persist/secrets/heim-pc/first-boot", str(secret_dir)
         ).replace(
             "/persist/heim-pc/bootstrap", str(marker_dir)
+        ).replace(
+            '[ "$expected_owner" = "0:0" ] || fail "credential bootstrap is not running as root"',
+            ': # test harness runs as the current unprivileged file owner',
         )
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
@@ -244,7 +247,12 @@ class T(unittest.TestCase):
         self.assertIn('builtins.hasAttr "/persist" config.fileSystems', host)
         self.assertIn("users.mutableUsers = true;", host)
         self.assertIn("heim-pc-firstboot-credentials", host)
+        self.assertIn('[ "$expected_owner" = "0:0" ] || fail "credential bootstrap is not running as root"', host)
+        self.assertIn('User = "root";', host)
+        self.assertIn('Group = "root";', host)
         self.assertIn('requiredBy = [ "multi-user.target" "display-manager.service" ];', host)
+        self.assertIn('exact_path "$secret_dir"', host)
+        self.assertIn('validate_marker_dir', host)
         self.assertIn('secret_path="$secret_dir/alex-password-hash"', host)
         self.assertIn('marker_path="$marker_dir/alex-password-initialized"', host)
         self.assertIn("chpasswd -e", host)
