@@ -15,6 +15,7 @@ let
     && builtins.hasAttr "/persist" config.fileSystems;
 
   firstBootCredentialProgram = pkgs.writeText "heim-pc-firstboot-credentials.py" ''
+    import fcntl
     import os
     import re
     import stat
@@ -23,10 +24,22 @@ let
 
     PERSIST_PATH = "/persist"
     SHADOW_PATH = "/etc/shadow"
+    SOURCE_REVISION = ${builtins.toJSON sourceRevision}
     EXPECTED_UID = 0
     EXPECTED_GID = 0
+    MARKER_NAME = "alex-password-initialized"
+    LOCK_NAME = ".alex-password-bootstrap.lock"
+    SECRET_NAME = "alex-password-hash"
+    AUTHORITY_NAME = "alex-password-bootstrap-authority"
     MARKER_BYTES = b"schema_version=1\nuser=alex\nstate=initialized\n"
-    YESCRYPT_RE = re.compile(r"^\$y\$[./0-9A-Za-z]{3}\$[./0-9A-Za-z]{22}\$[./0-9A-Za-z]{43}$")
+    AUTHORITY_BYTES = (
+        "schema_version=1\n"
+        "user=alex\n"
+        "action=initialize-password\n"
+        "source_revision=" + SOURCE_REVISION + "\n"
+    ).encode("ascii")
+    YESCRYPT_RE = re.compile(r"^\$y\$j9T\$[./0-9A-Za-z]{22}\$[./0-9A-Za-z]{43}$")
+    SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
     NOFOLLOW = os.O_NOFOLLOW
     DIRECTORY = os.O_DIRECTORY
 
@@ -95,6 +108,18 @@ let
             fail("could not inspect " + name)
 
 
+    def regular_identity(info):
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_nlink,
+            info.st_uid,
+            info.st_gid,
+            stat.S_IMODE(info.st_mode),
+            info.st_size,
+        )
+
+
     def read_regular_at(parent_fd, name, label, exact_mode, max_bytes):
         try:
             fd = os.open(name, os.O_RDONLY | NOFOLLOW, dir_fd=parent_fd)
@@ -116,9 +141,18 @@ let
                 data += chunk
             if len(data) > max_bytes:
                 fail(label + " is unexpectedly large")
-            return data
+            return data, regular_identity(info)
         finally:
             os.close(fd)
+
+
+    def assert_entry_identity(parent_fd, name, expected, label):
+        try:
+            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except OSError:
+            fail(label + " identity is no longer available")
+        if not stat.S_ISREG(info.st_mode) or regular_identity(info) != expected:
+            fail(label + " identity changed before consumption")
 
 
     def write_all(fd, data):
@@ -130,15 +164,16 @@ let
             view = view[written:]
 
 
-    def shadow_hash():
+    def open_shadow_hash():
         try:
             fd = os.open(SHADOW_PATH, os.O_RDONLY | NOFOLLOW)
         except OSError:
             fail("shadow database is unavailable")
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != EXPECTED_UID:
+            os.close(fd)
+            fail("shadow database identity is unsafe")
         try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != EXPECTED_UID:
-                fail("shadow database identity is unsafe")
             with os.fdopen(os.dup(fd), "r", encoding="utf-8", errors="strict") as handle:
                 matches = []
                 for line in handle:
@@ -149,14 +184,17 @@ let
                         matches.append(fields[1])
             if len(matches) != 1:
                 fail("alex shadow entry is missing or duplicated")
-            return matches[0]
-        finally:
+            return fd, matches[0], (info.st_dev, info.st_ino)
+        except BaseException:
             os.close(fd)
+            raise
 
 
-    def fsync_shadow():
+    def fsync_verified_shadow(fd, expected_identity):
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != expected_identity:
+            fail("verified shadow inode changed")
         try:
-            fd = os.open(SHADOW_PATH, os.O_RDONLY | NOFOLLOW)
             parent = os.open(os.path.dirname(SHADOW_PATH), os.O_RDONLY | DIRECTORY | NOFOLLOW)
         except OSError:
             fail("shadow durability path is unavailable")
@@ -166,8 +204,17 @@ let
         except OSError:
             fail("shadow durability sync failed")
         finally:
-            os.close(fd)
             os.close(parent)
+
+
+    def require_shadow_hash(expected_hash):
+        fd, observed_hash, identity = open_shadow_hash()
+        try:
+            if observed_hash != expected_hash:
+                fail("alex shadow hash does not match staged bootstrap material")
+            fsync_verified_shadow(fd, identity)
+        finally:
+            os.close(fd)
 
 
     def open_secret_dir(persist_fd, optional=False):
@@ -207,9 +254,9 @@ let
 
 
     def validate_marker(marker_dir_fd):
-        marker = read_regular_at(
+        marker, _ = read_regular_at(
             marker_dir_fd,
-            "alex-password-initialized",
+            MARKER_NAME,
             "bootstrap marker",
             0o600,
             128,
@@ -218,120 +265,219 @@ let
             fail("bootstrap marker content mismatch")
 
 
+    def acquire_bootstrap_lock(marker_dir_fd):
+        try:
+            fd = os.open(
+                LOCK_NAME,
+                os.O_RDWR | os.O_CREAT | NOFOLLOW,
+                0o600,
+                dir_fd=marker_dir_fd,
+            )
+        except OSError:
+            fail("bootstrap lock is unavailable or unsafe")
+        try:
+            info = os.fstat(fd)
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_uid != EXPECTED_UID
+                or info.st_gid != EXPECTED_GID
+                or stat.S_IMODE(info.st_mode) != 0o600
+            ):
+                fail("bootstrap lock identity or mode mismatch")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                fail("another bootstrap instance is active")
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+
+    def remove_staging_file(marker_dir_fd, name):
+        try:
+            os.unlink(name, dir_fd=marker_dir_fd)
+            os.fsync(marker_dir_fd)
+        except FileNotFoundError:
+            return
+        except OSError:
+            fail("bootstrap marker staging cleanup failed")
+
+
+    if SOURCE_REVISION_RE.fullmatch(SOURCE_REVISION) is None:
+        fail("credential bootstrap requires an exact clean source revision")
     if os.geteuid() != EXPECTED_UID or os.getegid() != EXPECTED_GID:
         fail("credential bootstrap is not running as root")
 
     persist_fd = open_absolute_dir(PERSIST_PATH, "persist mount")
     try:
-        marker_dir_fd = open_marker_dir(persist_fd, optional=True)
-        if marker_dir_fd is not None:
+        marker_dir_fd = open_marker_dir(persist_fd, create=True)
+        try:
+            lock_fd = acquire_bootstrap_lock(marker_dir_fd)
             try:
-                if entry_exists(marker_dir_fd, "alex-password-initialized"):
+                if entry_exists(marker_dir_fd, MARKER_NAME):
                     validate_marker(marker_dir_fd)
                     secret_dir_fd = open_secret_dir(persist_fd, optional=True)
                     if secret_dir_fd is not None:
                         try:
-                            if entry_exists(secret_dir_fd, "alex-password-hash"):
-                                fail("bootstrap secret remains after initialization")
+                            for staged_name in (SECRET_NAME, AUTHORITY_NAME):
+                                if entry_exists(secret_dir_fd, staged_name):
+                                    fail("bootstrap staging material remains after initialization")
                         finally:
                             os.close(secret_dir_fd)
                     raise SystemExit(0)
-            finally:
-                os.close(marker_dir_fd)
 
-        current_hash = shadow_hash()
-        if current_hash not in {"!", "!!", "*"}:
-            fail("alex account is not in the virgin locked state")
+                shadow_fd, current_hash, _ = open_shadow_hash()
+                os.close(shadow_fd)
+                if current_hash not in {"!", "!!", "*"}:
+                    fail("alex account is not in an initialization-compatible locked state")
 
-        secret_dir_fd = open_secret_dir(persist_fd)
-        try:
-            secret = read_regular_at(
-                secret_dir_fd,
-                "alex-password-hash",
-                "bootstrap secret",
-                0o600,
-                256,
-            )
-            if secret.count(b"\n") != 1 or not secret.endswith(b"\n"):
-                fail("bootstrap secret must contain exactly one newline-terminated line")
-            try:
-                password_hash = secret[:-1].decode("ascii")
-            except UnicodeDecodeError:
-                fail("bootstrap secret is not ASCII")
-            if YESCRYPT_RE.fullmatch(password_hash) is None:
-                fail("bootstrap secret is not canonical yescrypt")
-
-            # Preflight the durable marker destination before mutating /etc/shadow.
-            marker_dir_fd = open_marker_dir(persist_fd, create=True)
-            try:
-                if entry_exists(marker_dir_fd, "alex-password-initialized"):
-                    fail("bootstrap marker appeared during preflight")
-
+                secret_dir_fd = open_secret_dir(persist_fd)
                 try:
-                    result = subprocess.run(
-                        ["chpasswd", "-e"],
-                        input=("alex:" + password_hash + "\n").encode("ascii"),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                        timeout=10,
-                    )
-                except subprocess.TimeoutExpired:
-                    fail("setting alex password timed out")
-                except OSError:
-                    fail("setting alex password could not start")
-                if result.returncode != 0:
-                    fail("setting alex password failed")
-
-                if shadow_hash() != password_hash:
-                    fail("alex shadow hash does not match staged bootstrap material")
-                fsync_shadow()
-
-                # From here on, failure must never replay chpasswd. Secret removal
-                # is descriptor-relative and durably synced before marker publish.
-                try:
-                    os.unlink("alex-password-hash", dir_fd=secret_dir_fd)
-                    os.fsync(secret_dir_fd)
-                except OSError:
-                    fail("consuming bootstrap secret failed")
-
-                tmp_name = ".alex-password-initialized.tmp-" + str(os.getpid())
-                try:
-                    marker_fd = os.open(
-                        tmp_name,
-                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+                    authority, authority_identity = read_regular_at(
+                        secret_dir_fd,
+                        AUTHORITY_NAME,
+                        "bootstrap authority",
                         0o600,
-                        dir_fd=marker_dir_fd,
+                        256,
                     )
-                except OSError:
-                    fail("bootstrap marker staging failed")
-                try:
-                    write_all(marker_fd, MARKER_BYTES)
-                    os.fsync(marker_fd)
-                except OSError:
-                    fail("bootstrap marker write failed")
-                finally:
-                    os.close(marker_fd)
+                    if authority != AUTHORITY_BYTES:
+                        fail("bootstrap authority is not bound to this exact source")
 
-                try:
-                    os.replace(
-                        tmp_name,
-                        "alex-password-initialized",
-                        src_dir_fd=marker_dir_fd,
-                        dst_dir_fd=marker_dir_fd,
+                    secret, secret_identity = read_regular_at(
+                        secret_dir_fd,
+                        SECRET_NAME,
+                        "bootstrap secret",
+                        0o600,
+                        256,
                     )
-                    os.fsync(marker_dir_fd)
-                except OSError:
+                    if secret.count(b"\n") != 1 or not secret.endswith(b"\n"):
+                        fail("bootstrap secret must contain exactly one newline-terminated line")
                     try:
-                        os.unlink(tmp_name, dir_fd=marker_dir_fd)
-                    except OSError:
-                        pass
-                    fail("bootstrap marker publication failed")
-                validate_marker(marker_dir_fd)
+                        password_hash = secret[:-1].decode("ascii")
+                    except UnicodeDecodeError:
+                        fail("bootstrap secret is not ASCII")
+                    if YESCRYPT_RE.fullmatch(password_hash) is None:
+                        fail("bootstrap secret is not canonical default-cost yescrypt")
+
+                    # Stage and fsync the actual marker inode before changing the
+                    # password. This proves the marker directory is writable and
+                    # keeps later publication to one create-if-absent link.
+                    tmp_name = ".alex-password-initialized.pending-" + str(os.getpid())
+                    probe_name = ".alex-password-publish-probe-" + str(os.getpid())
+                    publication_linked = False
+                    try:
+                        marker_fd = os.open(
+                            tmp_name,
+                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+                            0o600,
+                            dir_fd=marker_dir_fd,
+                        )
+                        try:
+                            write_all(marker_fd, MARKER_BYTES)
+                            os.fsync(marker_fd)
+                        finally:
+                            os.close(marker_fd)
+
+                        try:
+                            os.link(
+                                tmp_name,
+                                probe_name,
+                                src_dir_fd=marker_dir_fd,
+                                dst_dir_fd=marker_dir_fd,
+                                follow_symlinks=False,
+                            )
+                            os.fsync(marker_dir_fd)
+                            os.unlink(probe_name, dir_fd=marker_dir_fd)
+                            os.fsync(marker_dir_fd)
+                        except OSError:
+                            try:
+                                os.unlink(probe_name, dir_fd=marker_dir_fd)
+                            except OSError:
+                                pass
+                            fail("bootstrap marker destination is not durably publishable")
+
+                        if entry_exists(marker_dir_fd, MARKER_NAME):
+                            fail("bootstrap marker appeared during preflight")
+
+                        try:
+                            result = subprocess.run(
+                                ["chpasswd", "-e"],
+                                input=("alex:" + password_hash + "\n").encode("ascii"),
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                check=False,
+                                timeout=10,
+                            )
+                        except subprocess.TimeoutExpired:
+                            fail("setting alex password timed out")
+                        except OSError:
+                            fail("setting alex password could not start")
+                        if result.returncode != 0:
+                            fail("setting alex password failed")
+
+                        require_shadow_hash(password_hash)
+
+                        # From here on, failure must never replay chpasswd. Bind
+                        # each staged directory entry to the inode that was read,
+                        # then consume both the secret and its source-bound
+                        # authorization before publishing success.
+                        try:
+                            assert_entry_identity(
+                                secret_dir_fd, SECRET_NAME, secret_identity, "bootstrap secret"
+                            )
+                            os.unlink(SECRET_NAME, dir_fd=secret_dir_fd)
+                            assert_entry_identity(
+                                secret_dir_fd,
+                                AUTHORITY_NAME,
+                                authority_identity,
+                                "bootstrap authority",
+                            )
+                            os.unlink(AUTHORITY_NAME, dir_fd=secret_dir_fd)
+                            os.fsync(secret_dir_fd)
+                        except OSError:
+                            fail("consuming bootstrap staging material failed")
+
+                        # Detect a password change after the first exact readback
+                        # before the success marker is made visible.
+                        require_shadow_hash(password_hash)
+
+                        try:
+                            os.link(
+                                tmp_name,
+                                MARKER_NAME,
+                                src_dir_fd=marker_dir_fd,
+                                dst_dir_fd=marker_dir_fd,
+                                follow_symlinks=False,
+                            )
+                            publication_linked = True
+                            os.fsync(marker_dir_fd)
+                        except FileExistsError:
+                            fail("bootstrap marker appeared before publication")
+                        except OSError:
+                            fail("bootstrap marker publication failed")
+
+                        # A successful link is deliberately not cleaned up on a
+                        # later error until its second name is durably removed.
+                        # Thus an interrupted publication remains fail-closed as
+                        # a two-link marker rather than silently looking complete.
+                        try:
+                            os.unlink(tmp_name, dir_fd=marker_dir_fd)
+                            os.fsync(marker_dir_fd)
+                        except OSError:
+                            fail("bootstrap marker staging cleanup failed")
+                        publication_linked = False
+                        validate_marker(marker_dir_fd)
+                    finally:
+                        if not publication_linked and entry_exists(marker_dir_fd, tmp_name):
+                            remove_staging_file(marker_dir_fd, tmp_name)
+                finally:
+                    os.close(secret_dir_fd)
             finally:
-                os.close(marker_dir_fd)
+                os.close(lock_fd)
         finally:
-            os.close(secret_dir_fd)
+            os.close(marker_dir_fd)
     finally:
         os.close(persist_fd)
   '';
