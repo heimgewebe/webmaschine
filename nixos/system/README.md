@@ -46,7 +46,17 @@ The host-shaped configurations have deliberately different roles:
 
 The physical host profiles enable AMD microcode for the Ryzen platform. The VM proof does not. `alex` is in the `networkmanager` group so the desktop user can manage NetworkManager connections.
 
-A secure credential/first-boot bootstrap is **not yet defined** for a fresh physical installation. No password or password hash is embedded in Git or the Nix Store. Therefore the storage target is a build/proof candidate, not yet a login-ready bare-metal install. This is a blocking pre-bare-metal successor gate, tracked as `HEIM-PC-NIXOS-MIGRATION-V1-FIRST-BOOT-CREDENTIALS`, not something this publication PR may silently invent.
+The source now defines a fail-closed **first-boot credential contract** for storage-backed physical profiles. This closes the source-design gap only; it does not make the storage target login-ready until a separately authorized disposable installation proves desktop login and administrative recovery. No password, password hash or reusable credential is embedded in Git or the Nix Store.
+
+### First-boot credential contract
+
+The credential producer is a separately authorized privileged staging step outside the Nix build. It generates a salted password hash with a trusted host/recovery tool without putting the plaintext or hash in Git, derivations, shell history, logs or public receipts. Delivery is target-bound: before the first physical boot, that staging step places exactly one hash line at `/persist/secrets/heim-pc/first-boot/alex-password-hash` on the already unlocked encrypted target. The directory must be a real root-owned `0700` directory and the file a real root-owned `0600` file. The repository task does not stage this file.
+
+`heim-pc-firstboot-credentials.service` is enabled only when the profile is physical **and** has the storage contract's `/persist` filesystem. It runs as root before `multi-user.target` and the display manager, requires `persist.mount`, validates the staged path and account state, sends the hash to `chpasswd -e` on stdin, verifies that `alex` becomes password-enabled, deletes the staged hash and atomically writes `/persist/heim-pc/bootstrap/alex-password-initialized` as root-owned `0600`. The prototype host, VM proof and live media do not consume this secret path.
+
+The persistent marker is deliberately non-overwriting. On later boots, marker + password-enabled account + no staged secret is accepted without changing the password. A new staged secret after initialization, an already-passworded account without the marker, unsafe ownership/modes, malformed material or a missing secret all fail closed. If the password changed but cleanup or marker publication was interrupted, the next boot also fails closed rather than replaying the mutation. `users.mutableUsers = true` means later normal password rotations with `passwd` survive NixOS activations; the bootstrap is not a password-rotation mechanism.
+
+Recovery is separate authority. A trusted recovery boot may unlock the encrypted target, restore administrative access with `passwd alex` if needed, and reconcile the marker **only after** independently verifying the intended account state. Normal boot never clears the marker or silently restages credentials. A separately authorized disposable installation must still prove the actual graphical login and administrative recovery path before bare-metal login readiness can be claimed. VM console autologin is explicitly not accepted as that evidence.
 
 Managed activation v1 supports only `test` and `next-boot`. Receipt-bound persistent promotion is separate v2 work tracked as `HEIM-PC-NIXOS-MIGRATION-V1-PERSISTENT-V2`.
 
@@ -203,7 +213,7 @@ It does not yet establish:
 - Secure Boot + LUKS + recovery on the real UEFI machine; blank-disk reconstruction and manual passphrase unlock already pass in KVM, but physical enrollment, current firmware boot selection, independent recovery/rollback and production secret handling do not;
 - Bureau approval/promotion -> physical host activation -> exact runtime identity readback;
 - production Rootbroker capability protocol;
-- secure credential/first-boot bootstrap and login readiness for a fresh bare-metal installation.
+- runtime credential readiness for a fresh bare-metal installation: the fail-closed source contract now exists, but disposable graphical-login/admin-recovery proof, target-bound secret staging and later physical acceptance remain unproven.
 
 Those are migration gates, not details to hand-wave away.
 

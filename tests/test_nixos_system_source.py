@@ -1,11 +1,15 @@
 from pathlib import Path
 import hashlib
+import os
 import re
+import subprocess
+import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "8af0a550bb1b501458b2d661c3bbdacc1c6f838b36f3f9e87999e021d681a62b"
+SOURCE_SNAPSHOT_SHA256 = "be38b9c8a3021f88764dc5af25b692d446a7ba2c371b50cfc034922dca2649fe"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 
 
@@ -150,6 +154,183 @@ class T(unittest.TestCase):
         self.assertIn('chmod 0644 "$RUNTIME_DIRECTORY/readback.json"', module)
         self.assertIn("jq -cn", module)
         self.assertIn("su -s /bin/sh -c 'grabowski-demo-operator status' alex", integration)
+
+    def _firstboot_script(self):
+        host = (SOURCE / "hosts/heim-pc/default.nix").read_text()
+        match = re.search(
+            r"  firstBootCredentialScript = ''\n(?P<body>.*?)\n  '';\nin\n\{",
+            host,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        return textwrap.dedent(match.group("body")).replace("''${", "${")
+
+    def _firstboot_fixture(self, root, initial_state="L"):
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        state_file = root / "account-state"
+        state_file.write_text(initial_state + "\n")
+        chpasswd_log = root / "chpasswd.log"
+
+        passwd = bin_dir / "passwd"
+        passwd.write_text(textwrap.dedent("""\
+            #!/bin/sh
+            set -eu
+            [ "${1:-}" = "-S" ] && [ "${2:-}" = "alex" ] || exit 64
+            state="$(cat "$HEIM_PC_TEST_ACCOUNT_STATE")"
+            printf 'alex %s 2026-09-07 0 99999 7 -1\n' "$state"
+        """))
+        passwd.chmod(0o700)
+
+        chpasswd = bin_dir / "chpasswd"
+        chpasswd.write_text(textwrap.dedent("""\
+            #!/bin/sh
+            set -eu
+            [ "${1:-}" = "-e" ] || exit 64
+            IFS= read -r line || exit 65
+            case "$line" in
+              alex:\$*) ;;
+              *) exit 66 ;;
+            esac
+            printf 'called\n' >> "$HEIM_PC_TEST_CHPASSWD_LOG"
+            printf 'P\n' > "$HEIM_PC_TEST_ACCOUNT_STATE"
+        """))
+        chpasswd.chmod(0o700)
+        return bin_dir, state_file, chpasswd_log
+
+    def _stage_firstboot_secret(self, root, content, mode=0o600):
+        secret_dir = root / "persist/secrets/heim-pc/first-boot"
+        secret_dir.mkdir(parents=True, exist_ok=True)
+        secret_dir.chmod(0o700)
+        secret = secret_dir / "alex-password-hash"
+        secret.write_text(content)
+        secret.chmod(mode)
+        return secret
+
+    def _run_firstboot_script(self, root, bin_dir, state_file, chpasswd_log):
+        secret_dir = root / "persist/secrets/heim-pc/first-boot"
+        marker_dir = root / "persist/heim-pc/bootstrap"
+        script = self._firstboot_script()
+        script = script.replace(
+            "/persist/secrets/heim-pc/first-boot", str(secret_dir)
+        ).replace(
+            "/persist/heim-pc/bootstrap", str(marker_dir)
+        )
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HEIM_PC_TEST_ACCOUNT_STATE"] = str(state_file)
+        env["HEIM_PC_TEST_CHPASSWD_LOG"] = str(chpasswd_log)
+        return subprocess.run(
+            ["/usr/bin/bash", "-c", script],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+
+    @staticmethod
+    def _synthetic_password_hash():
+        # Structurally valid test material only; not a reusable login credential.
+        return "$6$synthetic-test-fixture$" + ("x" * 64) + "\n"
+
+    @staticmethod
+    def _chpasswd_call_count(path):
+        return len(path.read_text().splitlines()) if path.exists() else 0
+
+    def test_firstboot_credential_source_contract_is_fail_closed_and_out_of_store(self):
+        host = (SOURCE / "hosts/heim-pc/default.nix").read_text()
+        readme = (SOURCE / "README.md").read_text()
+        self.assertIn("firstBootCredentialBootstrap =", host)
+        self.assertIn('builtins.hasAttr "/persist" config.fileSystems', host)
+        self.assertIn("users.mutableUsers = true;", host)
+        self.assertIn("heim-pc-firstboot-credentials", host)
+        self.assertIn('requiredBy = [ "multi-user.target" "display-manager.service" ];', host)
+        self.assertIn('secret_path="$secret_dir/alex-password-hash"', host)
+        self.assertIn('marker_path="$marker_dir/alex-password-initialized"', host)
+        self.assertIn("chpasswd -e", host)
+        self.assertIn('rm -- "$secret_path"', host)
+        self.assertIn('fail "marker missing for already-passworded alex account"', host)
+        self.assertNotIn("hashedPasswordFile", host)
+        self.assertNotRegex(
+            host,
+            r"\b(?:initialHashedPassword|initialPassword|hashedPassword|password)\s*=",
+        )
+        self.assertIn("separately authorized disposable installation", readme)
+        self.assertIn("VM console autologin is explicitly not accepted", readme)
+        self.assertIn("The repository task does not stage this file", readme)
+
+    def test_firstboot_credential_script_rejects_missing_invalid_and_unsafe_secret(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, state_file, log = self._firstboot_fixture(root)
+
+            missing = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("secret directory is missing or unsafe", missing.stderr)
+            self.assertEqual(state_file.read_text().strip(), "L")
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+            self._stage_firstboot_secret(root, "not-a-password-hash\n")
+            invalid = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("not an accepted password hash", invalid.stderr)
+            self.assertEqual(state_file.read_text().strip(), "L")
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+            secret = self._stage_firstboot_secret(
+                root, self._synthetic_password_hash(), mode=0o644
+            )
+            unsafe = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertNotEqual(unsafe.returncode, 0)
+            self.assertIn("secret owner or mode mismatch", unsafe.stderr)
+            self.assertTrue(secret.exists())
+            self.assertEqual(state_file.read_text().strip(), "L")
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+    def test_firstboot_credential_script_is_single_use_and_non_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, state_file, log = self._firstboot_fixture(root)
+            secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+
+            first = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            marker = root / "persist/heim-pc/bootstrap/alex-password-initialized"
+            self.assertEqual(state_file.read_text().strip(), "P")
+            self.assertFalse(secret.exists())
+            self.assertTrue(marker.is_file())
+            self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(self._chpasswd_call_count(log), 1)
+
+            repeat = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertEqual(repeat.returncode, 0, repeat.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 1)
+
+            restaged = self._stage_firstboot_secret(
+                root, self._synthetic_password_hash()
+            )
+            rejected = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("secret remains after initialization", rejected.stderr)
+            self.assertTrue(restaged.exists())
+            self.assertEqual(state_file.read_text().strip(), "P")
+            self.assertEqual(self._chpasswd_call_count(log), 1)
+
+    def test_firstboot_credential_script_never_overwrites_password_without_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, state_file, log = self._firstboot_fixture(root, initial_state="P")
+            secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+
+            result = self._run_firstboot_script(root, bin_dir, state_file, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("marker missing for already-passworded alex account", result.stderr)
+            self.assertEqual(state_file.read_text().strip(), "P")
+            self.assertTrue(secret.exists())
+            self.assertFalse(
+                (root / "persist/heim-pc/bootstrap/alex-password-initialized").exists()
+            )
+            self.assertEqual(self._chpasswd_call_count(log), 0)
 
     def test_nix_and_python_provenance_contracts_both_require_40_hex(self):
         flake = (SOURCE / "flake.nix").read_text()
