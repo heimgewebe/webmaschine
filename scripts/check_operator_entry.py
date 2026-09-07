@@ -241,12 +241,36 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         errors.append("capabilityLocators.audioTranscription.authority is invalid")
     if transcription.get("authorityKind") != "capability_locator_only":
         errors.append("capabilityLocators.audioTranscription.authorityKind must remain locator-only")
-    for field in ("repository", "architecture", "policy"):
+    for field in ("repository", "architecture", "policy", "runbook"):
         _require_host_path(
             transcription.get(field),
             f"capabilityLocators.audioTranscription.{field}",
             errors,
         )
+    reuse_policy = _require_object(
+        transcription.get("reusePolicy"),
+        "capabilityLocators.audioTranscription.reusePolicy",
+        errors,
+    )
+    for flag in (
+        "resolveBeforeSetup",
+        "readinessBeforeSetup",
+        "setupOnlyWhenReadinessReportsMissing",
+    ):
+        if reuse_policy.get(flag) is not True:
+            errors.append(f"capabilityLocators.audioTranscription.reusePolicy.{flag} must be true")
+    for flag in (
+        "perRequestVirtualenvAllowed",
+        "perRequestModelCacheAllowed",
+        "perRequestPackageInstallAllowed",
+    ):
+        if reuse_policy.get(flag) is not False:
+            errors.append(f"capabilityLocators.audioTranscription.reusePolicy.{flag} must remain false")
+    _require_host_path(
+        reuse_policy.get("sharedRuntimeCacheRoot"),
+        "capabilityLocators.audioTranscription.reusePolicy.sharedRuntimeCacheRoot",
+        errors,
+    )
     expected_asr_entry = [
         "python3",
         "${HOME}/repos/heim-pc/scripts/asr_engine.py",

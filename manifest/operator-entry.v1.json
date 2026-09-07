@@ -51,7 +51,17 @@
       ],
       "purpose": "Transcribe local audio through the canonical heim-pc ASR authority without pinning an engine in the locator",
       "entryKind": "argv",
-      "readinessOperation": "doctor"
+      "readinessOperation": "doctor",
+      "runbook": "${HOME}/repos/heim-pc/runbooks/asr-local-transcription.md",
+      "reusePolicy": {
+        "resolveBeforeSetup": true,
+        "readinessBeforeSetup": true,
+        "setupOnlyWhenReadinessReportsMissing": true,
+        "sharedRuntimeCacheRoot": "${HOME}/.local/cache/heim-pc/asr-open-engine",
+        "perRequestVirtualenvAllowed": false,
+        "perRequestModelCacheAllowed": false,
+        "perRequestPackageInstallAllowed": false
+      }
     },
     "documentTextExtraction": {
       "schemaVersion": 1,
