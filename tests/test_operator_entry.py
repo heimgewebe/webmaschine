@@ -214,10 +214,46 @@ class OperatorEntryTests(unittest.TestCase):
             "permission_to_delete_worktree_or_cache_payloads",
             managed["doesNotEstablish"],
         )
-        entry_ids = {item["id"] for item in contract["entrySequence"]}
+        entry_ids = [item["id"] for item in contract["entrySequence"]]
         self.assertIn("operator_context", entry_ids)
-        self.assertIn("capability_resolution", entry_ids)
-        self.assertIn("target_specific_live_state", entry_ids)
+        discovery_order = [
+            "scope_classification",
+            "native_capability_discovery",
+            "capability_resolution",
+            "specialized_route_resolution",
+            "source_resolution",
+            "target_specific_live_state",
+        ]
+        discovery_start = entry_ids.index("scope_classification")
+        self.assertEqual(
+            entry_ids[discovery_start : discovery_start + len(discovery_order)],
+            discovery_order,
+        )
+        entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
+        self.assertEqual(
+            entry_by_id["native_capability_discovery"]["operation"],
+            "prefer_existing_typed_surface",
+        )
+        self.assertEqual(
+            entry_by_id["capability_resolution"]["statusPolicy"],
+            {
+                "resolved": "select_host_authority",
+                "not_found": "continue_to_declared_specialized_routes",
+                "blocked": "stop_without_fallback",
+            },
+        )
+        self.assertEqual(
+            entry_by_id["specialized_route_resolution"]["precondition"],
+            "host_capability_status_not_found",
+        )
+        self.assertEqual(
+            entry_by_id["target_specific_live_state"]["readinessPolicy"],
+            {
+                "notReadyIsNotNotFound": True,
+                "notReadyAction": "recover_selected_authority",
+                "parallelReplacementAllowed": False,
+            },
+        )
         self.assertIn("stableEcosystemSemantics", contract["truthSources"])
         self.assertIn("executionRuntimeLeases", contract["truthSources"])
         repository_context = contract["truthSources"]["repositoryContext"]
@@ -361,6 +397,153 @@ class OperatorEntryTests(unittest.TestCase):
                     f"capabilityLocators.audioTranscription.reusePolicy.{flag} must remain false",
                     receipt["errors"],
                 )
+
+    def test_checker_rejects_discovery_fallback_on_blocked_host_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
+            entry_by_id["capability_resolution"]["statusPolicy"]["blocked"] = (
+                "continue_to_declared_specialized_routes"
+            )
+            entry_by_id["specialized_route_resolution"]["precondition"] = (
+                "host_capability_status_unresolved"
+            )
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "capability_resolution.statusPolicy must allow fallback only on explicit not_found",
+                receipt["errors"],
+            )
+            self.assertIn(
+                "specialized_route_resolution.precondition must require host capability not_found",
+                receipt["errors"],
+            )
+
+    def test_checker_rejects_interposed_discovery_step(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            entry_sequence = contract["entrySequence"]
+            native_index = next(
+                index
+                for index, item in enumerate(entry_sequence)
+                if item["id"] == "native_capability_discovery"
+            )
+            entry_sequence.insert(
+                native_index + 1,
+                {
+                    "id": "setup_per_request",
+                    "surface": "agent",
+                    "operation": "build_replacement_infrastructure",
+                },
+            )
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "entrySequence discovery steps must preserve reuse-before-build order",
+                receipt["errors"],
+            )
+
+    def test_checker_rejects_readiness_policy_that_allows_parallel_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
+            entry_by_id["target_specific_live_state"]["readinessPolicy"][
+                "parallelReplacementAllowed"
+            ] = True
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "target_specific_live_state.readinessPolicy must preserve canonical not-ready semantics",
+                receipt["errors"],
+            )
+
+    def test_reuse_before_build_guidance_matches_entry_sequence(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        runbook = (ROOT / "runbooks/asr-local-transcription.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        home_entry = (ROOT / "runtime/home-entry.md").read_text(encoding="utf-8")
+
+        agent_rule = next(
+            line
+            for line in agents.splitlines()
+            if line.startswith("* **Reuse-before-build / Capability-first:**")
+        )
+        self.assertEqual(
+            agent_rule,
+            "* **Reuse-before-build / Capability-first:** "
+            "Zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche "
+            "verwenden, wenn sie den Auftrag erfüllt. Nur wenn keine solche native "
+            "Oberfläche passt und der Intent host-local ist, den installierten "
+            "Capability-Locator auflösen; ein `blocked` stoppt statt auf einen "
+            "Ersatzpfad auszuweichen. Erst bei explizitem `not_found` dürfen bereits "
+            "deklarierte Spezialrouten folgen. Für Audio-Transkription ist der "
+            "host-local Grabowski-Leseweg danach "
+            "`grabowski_host_capability_resolve(intent=\"audio.transcribe\")`. "
+            "Keine eigene Runtime, virtuelle Umgebung oder Modellcache aufbauen, "
+            "solange eine kanonische Authority oder deklarierte Route existiert.",
+        )
+
+        heading = "## 1. Native Oberfläche vor Host-Locator prüfen"
+        section = runbook.split(heading, 1)[1].split("\n## ", 1)[0].strip()
+        expected_opening = (
+            "Vor dem host-local Schritt zuerst eine bereits veröffentlichte native "
+            "typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt. "
+            "Nur wenn keine solche Oberfläche passt, den installierten Maschinenvertrag "
+            "über die host-local Capability-Auflösung lesen. Ein `blocked` ist kein "
+            "Miss und darf nicht durch einen Ersatzpfad umgangen werden. Nur ein "
+            "explizites `not_found` darf zu einer bereits deklarierten Spezialroute "
+            "weiterführen:\n\n"
+            "`grabowski_host_capability_resolve(intent=\"audio.transcribe\")`"
+        )
+        self.assertTrue(section.startswith(expected_opening), section)
+
+        readme_route = readme.split(
+            "Für ChatGPT über Grabowski beginnt jede neue Operatorroute mit:", 1
+        )[1].split("\n## ", 1)[0]
+        readme_steps = [
+            line.strip() for line in readme_route.splitlines() if line.strip()[:1].isdigit()
+        ]
+        self.assertEqual(
+            readme_steps[6:10],
+            [
+                "7. zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt;",
+                "8. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` darf zu einer bereits deklarierten Spezialroute weiterführen, und non-host Intents hängen nicht vom Host-Vertrag ab;",
+                "9. gezielt die im Vertrag referenzierten Primärquellen der ausgewählten Route lesen;",
+                "10. danach die gewählte Authority sowie ihre Live-Policy, Readiness und den zielbezogenen Livezustand unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und rechtfertigt keinen parallelen Ersatz.",
+            ],
+        )
+
+        home_route = home_entry.split("## Betriebslogik", 1)[1]
+        home_steps = [
+            line.strip() for line in home_route.splitlines() if line.strip()[:1].isdigit()
+        ]
+        self.assertEqual(
+            home_steps[3:7],
+            [
+                "4. zuerst eine passende bereits veröffentlichte native typed Grabowski-Oberfläche verwenden,",
+                "5. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` erlaubt die bereits deklarierte Spezialroute, während non-host Intents nicht vom Host-Vertrag abhängen,",
+                "6. nur die im Vertrag referenzierten Primärquellen der ausgewählten Route lesen,",
+                "7. danach die ausgewählte Authority samt Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und erlaubt keinen parallelen Ersatz,",
+            ],
+        )
 
     def test_checker_accepts_additional_generic_locator_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

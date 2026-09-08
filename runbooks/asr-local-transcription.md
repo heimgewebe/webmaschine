@@ -31,9 +31,9 @@ Für lokale Audio-Transkription auf dem Heim-PC existiert bereits eine kanonisch
 
 Dieses Runbook ist nur operative Guidance. Es ersetzt weder frische Runtime-Prüfung noch die ASR-Policy und erteilt keine Mutations-, Retry-, Kosten- oder Abschlussautorität.
 
-## 1. Capability zuerst auflösen
+## 1. Native Oberfläche vor Host-Locator prüfen
 
-Bei ChatGPT über Grabowski zuerst den installierten Maschinenvertrag über die typed Capability-Auflösung lesen:
+Vor dem host-local Schritt zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt. Nur wenn keine solche Oberfläche passt, den installierten Maschinenvertrag über die host-local Capability-Auflösung lesen. Ein `blocked` ist kein Miss und darf nicht durch einen Ersatzpfad umgangen werden. Nur ein explizites `not_found` darf zu einer bereits deklarierten Spezialroute weiterführen:
 
 `grabowski_host_capability_resolve(intent="audio.transcribe")`
 

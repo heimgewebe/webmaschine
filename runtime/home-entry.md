@@ -73,8 +73,11 @@ Ohne ausdrücklichen Auftrag und Zweckprüfung dürfen nicht gelesen oder ausgeg
 1. lokal über `/home/alex/AGENTS.md`, `/home/alex/repos/AGENTS.md` oder den installierten JSON-Vertrag landen,
 2. Grabowski-Laufzeit, Bootstrap und kompakten Operator-Kontext frisch prüfen,
 3. Auftrag als Einzelrepo-, systemweiten, Host-, Task- oder Historienfall klassifizieren,
-4. nur die im Vertrag referenzierten Primärquellen lesen,
-5. vor Mutation Repo-, PR-, CI-, Lease-, Worktree-, Task- und Prozesszustand prüfen,
-6. genau einen begrenzten Effekt ausführen und Zielzustand erneut lesen.
+4. zuerst eine passende bereits veröffentlichte native typed Grabowski-Oberfläche verwenden,
+5. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` erlaubt die bereits deklarierte Spezialroute, während non-host Intents nicht vom Host-Vertrag abhängen,
+6. nur die im Vertrag referenzierten Primärquellen der ausgewählten Route lesen,
+7. danach die ausgewählte Authority samt Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und erlaubt keinen parallelen Ersatz,
+8. vor Mutation zusätzlich Repo-, PR-, CI-, Lease-, Worktree-, Task- und Prozesszustand als zielbezogenen Livezustand prüfen,
+9. genau einen begrenzten Effekt ausführen und Zielzustand erneut lesen.
 
 Wenn diese Kette unterbrochen ist, ist das eine Entrée- oder Projektionsdrift, kein Grund für einen breiten Home-Scan.
