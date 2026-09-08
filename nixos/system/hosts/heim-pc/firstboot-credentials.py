@@ -1,4 +1,5 @@
 import fcntl
+import grp
 import hashlib
 import os
 import re
@@ -11,6 +12,7 @@ SHADOW_PATH = "/etc/shadow"
 SOURCE_REVISION = @SOURCE_REVISION_JSON@
 EXPECTED_UID = 0
 EXPECTED_GID = 0
+SHADOW_GID = grp.getgrnam("shadow").gr_gid
 MARKER_NAME = "alex-password-initialized"
 PENDING_NAME = ".alex-password-initialized.pending"
 LOCK_NAME = ".alex-password-bootstrap.lock"
@@ -124,7 +126,7 @@ def regular_identity(info):
 
 def read_regular_at(parent_fd, name, label, exact_mode, max_bytes):
     try:
-        fd = os.open(name, os.O_RDONLY | NOFOLLOW, dir_fd=parent_fd)
+        fd = os.open(name, os.O_RDONLY | NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
     except OSError:
         fail(label + " is missing or unsafe")
     try:
@@ -166,16 +168,29 @@ def write_all(fd, data):
         view = view[written:]
 
 
+def validate_shadow_metadata(info, label):
+    mode = stat.S_IMODE(info.st_mode)
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != EXPECTED_UID
+    ):
+        fail(label + " identity is unsafe")
+    if mode == 0o600:
+        return
+    if mode == 0o640 and info.st_gid == SHADOW_GID:
+        return
+    fail(label + " permissions are unsafe")
+
+
 def open_shadow_hash():
     try:
-        fd = os.open(SHADOW_PATH, os.O_RDONLY | NOFOLLOW)
+        fd = os.open(SHADOW_PATH, os.O_RDONLY | NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         fail("shadow database is unavailable")
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != EXPECTED_UID:
-        os.close(fd)
-        fail("shadow database identity is unsafe")
     try:
+        info = os.fstat(fd)
+        validate_shadow_metadata(info, "shadow database")
         with os.fdopen(os.dup(fd), "r", encoding="utf-8", errors="strict") as handle:
             matches = []
             for line in handle:
@@ -197,11 +212,8 @@ def assert_shadow_path_identity(expected_identity):
         info = os.stat(SHADOW_PATH, follow_symlinks=False)
     except OSError:
         fail("verified shadow path is unavailable")
-    if (
-        not stat.S_ISREG(info.st_mode)
-        or info.st_uid != EXPECTED_UID
-        or (info.st_dev, info.st_ino) != expected_identity
-    ):
+    validate_shadow_metadata(info, "verified shadow path")
+    if (info.st_dev, info.st_ino) != expected_identity:
         fail("verified shadow path identity changed")
 
 
@@ -215,6 +227,14 @@ def fsync_verified_shadow(fd, expected_identity):
     except OSError:
         fail("shadow durability path is unavailable")
     try:
+        parent_info = os.fstat(parent)
+        if (
+            not stat.S_ISDIR(parent_info.st_mode)
+            or parent_info.st_uid != EXPECTED_UID
+            or parent_info.st_gid != EXPECTED_GID
+            or (stat.S_IMODE(parent_info.st_mode) & 0o022) != 0
+        ):
+            fail("shadow durability directory is unsafe")
         os.fsync(fd)
         os.fsync(parent)
         assert_shadow_path_identity(expected_identity)
@@ -230,6 +250,31 @@ def require_shadow_hash(expected_hash):
         if observed_hash != expected_hash:
             fail("alex shadow hash does not match staged bootstrap material")
         fsync_verified_shadow(fd, identity)
+    finally:
+        os.close(fd)
+
+
+def is_initialized_modular_crypt(password_field):
+    if password_field.startswith("!"):
+        password_field = password_field[1:]
+    fields = password_field.split("$")
+    return len(fields) >= 4 and fields[0] == "" and all(fields[1:])
+
+
+def require_marker_shadow_initialized():
+    fd, observed_hash, identity = open_shadow_hash()
+    try:
+        # The marker lives on /persist while /etc/shadow lives on the root
+        # subvolume. A root rollback can therefore retain the marker while
+        # restoring alex to a fresh bare lock. Do not pin later password
+        # rotations to yescrypt, but require a structurally plausible modular
+        # crypt field before releasing the login gate.
+        if not is_initialized_modular_crypt(observed_hash):
+            fail(
+                "bootstrap marker exists but alex shadow state is uninitialized; "
+                "recovery required"
+            )
+        assert_shadow_path_identity(identity)
     finally:
         os.close(fd)
 
@@ -341,6 +386,7 @@ try:
 
             if entry_exists(marker_dir_fd, MARKER_NAME):
                 validate_marker(marker_dir_fd)
+                require_marker_shadow_initialized()
                 secret_dir_fd = open_secret_dir(persist_fd, optional=True)
                 if secret_dir_fd is not None:
                     try:
