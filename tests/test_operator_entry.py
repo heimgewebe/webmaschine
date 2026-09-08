@@ -447,6 +447,8 @@ class OperatorEntryTests(unittest.TestCase):
     def test_reuse_before_build_guidance_matches_entry_sequence(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         runbook = (ROOT / "runbooks/asr-local-transcription.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        home_entry = (ROOT / "runtime/home-entry.md").read_text(encoding="utf-8")
 
         agent_rule = next(
             line
@@ -481,6 +483,36 @@ class OperatorEntryTests(unittest.TestCase):
             "`grabowski_host_capability_resolve(intent=\"audio.transcribe\")`"
         )
         self.assertTrue(section.startswith(expected_opening), section)
+
+        readme_route = readme.split(
+            "Für ChatGPT über Grabowski beginnt jede neue Operatorroute mit:", 1
+        )[1].split("\n## ", 1)[0]
+        readme_steps = [
+            line.strip() for line in readme_route.splitlines() if line.strip()[:1].isdigit()
+        ]
+        self.assertEqual(
+            readme_steps[6:10],
+            [
+                "7. zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt;",
+                "8. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` darf zu einer bereits deklarierten Spezialroute weiterführen, und non-host Intents hängen nicht vom Host-Vertrag ab;",
+                "9. die gewählte Authority sowie ihre Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und rechtfertigt keinen parallelen Ersatz;",
+                "10. gezielt die referenzierten Primärquellen lesen und vor Mutation den zielbezogenen Livezustand prüfen.",
+            ],
+        )
+
+        home_route = home_entry.split("## Betriebslogik", 1)[1]
+        home_steps = [
+            line.strip() for line in home_route.splitlines() if line.strip()[:1].isdigit()
+        ]
+        self.assertEqual(
+            home_steps[3:7],
+            [
+                "4. zuerst eine passende bereits veröffentlichte native typed Grabowski-Oberfläche verwenden,",
+                "5. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` erlaubt die bereits deklarierte Spezialroute, während non-host Intents nicht vom Host-Vertrag abhängen,",
+                "6. die ausgewählte Authority samt Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und erlaubt keinen parallelen Ersatz,",
+                "7. nur die im Vertrag referenzierten Primärquellen lesen,",
+            ],
+        )
 
     def test_checker_accepts_additional_generic_locator_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
