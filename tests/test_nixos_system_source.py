@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "a38f77939cdaed4ae799c66633d4ae0bf7541b9fd5d74cbe4487e25b302ef281"
+SOURCE_SNAPSHOT_SHA256 = "fa705bee6db410c3b8a6daa42a334be2ec18ef9ca7ad9ab22217ac9164834243"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -37,6 +37,28 @@ class T(unittest.TestCase):
         self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_REVISION"', workflow)
         self.assertIn("nix flake check --no-build --no-update-lock-file", workflow)
         self.assertIn(".#checks.x86_64-linux.profile-contract", workflow)
+        self.assertIn(".#checks.x86_64-linux.firstboot-credentials", workflow)
+
+    def test_firstboot_vm_proof_is_exact_source_and_secret_log_safe(self):
+        flake = (SOURCE / "flake.nix").read_text()
+        proof = (SOURCE / "tests/firstboot-credentials.nix").read_text()
+        self.assertIn("eb260b0b82199e380d881b2436e403dcda64ca32", flake)
+        self.assertIn("expectedHostSha256", proof)
+        self.assertIn("expectedHelperSha256", proof)
+        self.assertIn('${pkgs.shadow}/bin/chpasswd "$@"', proof)
+        self.assertIn('node.send_key(char, log=False)', proof)
+        self.assertNotIn('.send_chars(', proof)
+        self.assertIn('systemctl is-failed heim-pc-firstboot-credentials.service', proof)
+        self.assertIn('display-manager.service', proof)
+        self.assertIn('show-session $id -p Type --value', proof)
+        self.assertIn('= wayland &&', proof)
+        self.assertIn('.alex-password-initialized.pending', proof)
+        self.assertIn('heim-pc-test-chpasswd-count', proof)
+        self.assertIn('machine.start()', proof)
+        self.assertIn('interrupted.start()', proof)
+        self.assertNotIn('start_all()', proof)
+        self.assertIn('virtualisation.memorySize = 3072;', proof)
+        self.assertIn('pkgs.coreutils', proof)
 
     def test_root_lock_is_bound(self):
         self.assertEqual(hashlib.sha256((ROOT / "flake.lock").read_bytes()).hexdigest(), ROOT_LOCK_SHA256)
@@ -47,7 +69,7 @@ class T(unittest.TestCase):
         for path in files:
             relative = str(path.relative_to(SOURCE)).encode()
             digest.update(relative + b"\0" + path.read_bytes() + b"\0")
-        self.assertEqual(len(files), 22)
+        self.assertEqual(len(files), 23)
         self.assertEqual(digest.hexdigest(), SOURCE_SNAPSHOT_SHA256)
 
     def test_canonical_source_layout(self):
@@ -59,7 +81,7 @@ class T(unittest.TestCase):
             "modules/grabowski.nix", "modules/live-media.nix", "modules/networking.nix",
             "modules/nvidia.nix", "modules/observability.nix", "modules/physical-gates.nix",
             "modules/storage-layout.nix",
-            "tests/integration.nix", "tests/trust-zones.nix", "tests/vsock-broker.nix",
+            "tests/firstboot-credentials.nix", "tests/integration.nix", "tests/trust-zones.nix", "tests/vsock-broker.nix",
             "zones/agent.nix",
         ):
             self.assertTrue((SOURCE / relative).is_file(), relative)
