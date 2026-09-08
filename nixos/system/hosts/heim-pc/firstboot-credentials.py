@@ -150,13 +150,14 @@ def read_regular_at(parent_fd, name, label, exact_mode, max_bytes):
         os.close(fd)
 
 
-def assert_entry_identity(parent_fd, name, expected, label):
-    try:
-        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except OSError:
-        fail(label + " identity is no longer available")
-    if not stat.S_ISREG(info.st_mode) or regular_identity(info) != expected:
-        fail(label + " identity changed before consumption")
+def assert_entry_unchanged(
+    parent_fd, name, expected_identity, expected_bytes, label, exact_mode, max_bytes
+):
+    observed_bytes, observed_identity = read_regular_at(
+        parent_fd, name, label, exact_mode, max_bytes
+    )
+    if observed_identity != expected_identity or observed_bytes != expected_bytes:
+        fail(label + " changed after validation")
 
 
 def write_all(fd, data):
@@ -478,6 +479,28 @@ try:
                     if entry_exists(marker_dir_fd, MARKER_NAME):
                         fail("bootstrap marker appeared during preflight")
 
+                    # Re-read exact bytes as well as metadata immediately before
+                    # the mutation boundary. Inode/size identity alone cannot
+                    # detect a same-length in-place staging rewrite.
+                    assert_entry_unchanged(
+                        secret_dir_fd,
+                        SECRET_NAME,
+                        secret_identity,
+                        secret,
+                        "bootstrap secret",
+                        0o600,
+                        256,
+                    )
+                    assert_entry_unchanged(
+                        secret_dir_fd,
+                        AUTHORITY_NAME,
+                        authority_identity,
+                        authority,
+                        "bootstrap authority",
+                        0o600,
+                        384,
+                    )
+
                     # Crossing this boundary is intentionally sticky. An
                     # error, timeout or power loss from here until durable
                     # success must leave PENDING_NAME in place so a later
@@ -506,16 +529,25 @@ try:
                     # then consume both the secret and its source-bound
                     # authorization before publishing success.
                     try:
-                        assert_entry_identity(
-                            secret_dir_fd, SECRET_NAME, secret_identity, "bootstrap secret"
+                        assert_entry_unchanged(
+                            secret_dir_fd,
+                            SECRET_NAME,
+                            secret_identity,
+                            secret,
+                            "bootstrap secret",
+                            0o600,
+                            256,
                         )
-                        os.unlink(SECRET_NAME, dir_fd=secret_dir_fd)
-                        assert_entry_identity(
+                        assert_entry_unchanged(
                             secret_dir_fd,
                             AUTHORITY_NAME,
                             authority_identity,
+                            authority,
                             "bootstrap authority",
+                            0o600,
+                            384,
                         )
+                        os.unlink(SECRET_NAME, dir_fd=secret_dir_fd)
                         os.unlink(AUTHORITY_NAME, dir_fd=secret_dir_fd)
                         os.fsync(secret_dir_fd)
                     except OSError:

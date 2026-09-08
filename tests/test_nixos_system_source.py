@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "ff5cf24173379e5b4f6c8e9cb72e3f3a839c79aaebca8c55f8bb1350b82d617b"
+SOURCE_SNAPSHOT_SHA256 = "5b6b1278613ba274419506f744fb320d4c79129e9ec1a0acb1a4c9171c46b321"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -235,6 +235,18 @@ class T(unittest.TestCase):
                     handle.write(payload)
                     handle.flush()
                     os.fsync(handle.fileno())
+            mutate_path = os.environ.get("HEIM_PC_TEST_MUTATE_STAGING_PATH")
+            if mutate_path:
+                with open(mutate_path, "r+b") as handle:
+                    payload = handle.read()
+                    if not payload:
+                        raise SystemExit(69)
+                    changed = bytes([payload[0] ^ 1]) + payload[1:]
+                    handle.seek(0)
+                    handle.write(changed)
+                    handle.truncate()
+                    handle.flush()
+                    os.fsync(handle.fileno())
             marker_path = os.environ.get("HEIM_PC_TEST_AFTER_CHPASSWD_MARKER_PATH")
             if marker_path:
                 with open(marker_path, "x", encoding="utf-8") as handle:
@@ -455,7 +467,7 @@ class T(unittest.TestCase):
         self.assertIn("fcntl.flock", helper)
         self.assertIn("NOFOLLOW = os.O_NOFOLLOW", helper)
         self.assertIn("dir_fd=", helper)
-        self.assertIn("assert_entry_identity", helper)
+        self.assertIn("assert_entry_unchanged", helper)
         self.assertIn("os.fsync", helper)
         self.assertIn("timeout=10", helper)
         self.assertIn("write_all(marker_fd, MARKER_BYTES)", helper)
@@ -817,6 +829,44 @@ class T(unittest.TestCase):
             self.assertEqual(self._chpasswd_call_count(log), 1)
             self.assertTrue(self._firstboot_marker_path(root).exists())
             self.assertFalse(self._firstboot_pending_path(root).exists())
+
+    def test_firstboot_inplace_staging_mutation_after_chpasswd_is_sticky(self):
+        for entry in ("secret", "authority"):
+            with self.subTest(entry=entry):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    bin_dir, shadow, log = self._firstboot_fixture(root)
+                    secret = self._stage_firstboot_secret(
+                        root, self._synthetic_password_hash()
+                    )
+                    target = (
+                        secret
+                        if entry == "secret"
+                        else self._firstboot_authority_path(root)
+                    )
+                    result = self._run_firstboot_program(
+                        root,
+                        bin_dir,
+                        shadow,
+                        log,
+                        extra_env={"HEIM_PC_TEST_MUTATE_STAGING_PATH": str(target)},
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"bootstrap {entry} changed after validation", result.stderr)
+                    self.assertEqual(self._chpasswd_call_count(log), 1)
+                    self.assertEqual(
+                        self._shadow_hash(shadow),
+                        self._synthetic_password_hash().strip(),
+                    )
+                    self.assertTrue(secret.exists())
+                    self.assertTrue(self._firstboot_authority_path(root).exists())
+                    self.assertTrue(self._firstboot_pending_path(root).exists())
+                    self.assertFalse(self._firstboot_marker_path(root).exists())
+
+                    replay = self._run_firstboot_program(root, bin_dir, shadow, log)
+                    self.assertNotEqual(replay.returncode, 0)
+                    self.assertIn("bootstrap pending intent exists; recovery required", replay.stderr)
+                    self.assertEqual(self._chpasswd_call_count(log), 1)
 
     def test_firstboot_authority_rejects_extra_whitespace(self):
         with tempfile.TemporaryDirectory() as tmp:
