@@ -495,8 +495,8 @@ class OperatorEntryTests(unittest.TestCase):
             [
                 "7. zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt;",
                 "8. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` darf zu einer bereits deklarierten Spezialroute weiterführen, und non-host Intents hängen nicht vom Host-Vertrag ab;",
-                "9. die gewählte Authority sowie ihre Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und rechtfertigt keinen parallelen Ersatz;",
-                "10. gezielt die referenzierten Primärquellen lesen und vor Mutation den zielbezogenen Livezustand prüfen.",
+                "9. gezielt die im Vertrag referenzierten Primärquellen der ausgewählten Route lesen;",
+                "10. danach die gewählte Authority sowie ihre Live-Policy, Readiness und den zielbezogenen Livezustand unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und rechtfertigt keinen parallelen Ersatz.",
             ],
         )
 
@@ -509,8 +509,8 @@ class OperatorEntryTests(unittest.TestCase):
             [
                 "4. zuerst eine passende bereits veröffentlichte native typed Grabowski-Oberfläche verwenden,",
                 "5. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` erlaubt die bereits deklarierte Spezialroute, während non-host Intents nicht vom Host-Vertrag abhängen,",
-                "6. die ausgewählte Authority samt Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und erlaubt keinen parallelen Ersatz,",
-                "7. nur die im Vertrag referenzierten Primärquellen lesen,",
+                "6. nur die im Vertrag referenzierten Primärquellen der ausgewählten Route lesen,",
+                "7. danach die ausgewählte Authority samt Live-Policy und Readiness unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und erlaubt keinen parallelen Ersatz,",
             ],
         )
 
