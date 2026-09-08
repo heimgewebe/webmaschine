@@ -450,8 +450,11 @@ class T(unittest.TestCase):
             root = Path(tmp)
             bin_dir, shadow, log = self._firstboot_fixture(root)
             self._stage_firstboot_secret(root, self._synthetic_password_hash())
-            marker_dir = root / "persist/heim-pc/bootstrap"
-            marker_dir.mkdir(parents=True, mode=0o700)
+            marker_namespace = root / "persist/heim-pc"
+            marker_namespace.mkdir(parents=True, exist_ok=True)
+            marker_namespace.chmod(0o700)
+            marker_dir = marker_namespace / "bootstrap"
+            marker_dir.mkdir(mode=0o700)
             marker_dir.chmod(0o700)
             lock_path = marker_dir / ".alex-password-bootstrap.lock"
             lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
