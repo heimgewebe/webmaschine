@@ -883,9 +883,7 @@ class T(unittest.TestCase):
             with self.subTest(entry=entry):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
-                    bin_dir, shadow, log = self._firstboot_fixture(
-                        root
-                    )
+                    bin_dir, shadow, log = self._firstboot_fixture(root)
                     secret = self._stage_firstboot_secret(
                         root, self._synthetic_password_hash()
                     )
