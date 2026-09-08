@@ -447,10 +447,40 @@ class OperatorEntryTests(unittest.TestCase):
     def test_reuse_before_build_guidance_matches_entry_sequence(self) -> None:
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         runbook = (ROOT / "runbooks/asr-local-transcription.md").read_text(encoding="utf-8")
-        self.assertIn("native typed Grabowski-Oberfläche", agents)
-        self.assertIn("keine solche native Oberfläche passt", agents)
-        self.assertIn("native typed Grabowski-Oberfläche", runbook)
-        self.assertIn("keine solche Oberfläche passt", runbook)
+
+        agent_rule = next(
+            line
+            for line in agents.splitlines()
+            if line.startswith("* **Reuse-before-build / Capability-first:**")
+        )
+        self.assertEqual(
+            agent_rule,
+            "* **Reuse-before-build / Capability-first:** "
+            "Zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche "
+            "verwenden, wenn sie den Auftrag erfüllt. Nur wenn keine solche native "
+            "Oberfläche passt und der Intent host-local ist, den installierten "
+            "Capability-Locator auflösen; ein `blocked` stoppt statt auf einen "
+            "Ersatzpfad auszuweichen. Erst bei explizitem `not_found` dürfen bereits "
+            "deklarierte Spezialrouten folgen. Für Audio-Transkription ist der "
+            "host-local Grabowski-Leseweg danach "
+            "`grabowski_host_capability_resolve(intent=\"audio.transcribe\")`. "
+            "Keine eigene Runtime, virtuelle Umgebung oder Modellcache aufbauen, "
+            "solange eine kanonische Authority oder deklarierte Route existiert.",
+        )
+
+        heading = "## 1. Native Oberfläche vor Host-Locator prüfen"
+        section = runbook.split(heading, 1)[1].split("\n## ", 1)[0].strip()
+        expected_opening = (
+            "Vor dem host-local Schritt zuerst eine bereits veröffentlichte native "
+            "typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt. "
+            "Nur wenn keine solche Oberfläche passt, den installierten Maschinenvertrag "
+            "über die host-local Capability-Auflösung lesen. Ein `blocked` ist kein "
+            "Miss und darf nicht durch einen Ersatzpfad umgangen werden. Nur ein "
+            "explizites `not_found` darf zu einer bereits deklarierten Spezialroute "
+            "weiterführen:\n\n"
+            "`grabowski_host_capability_resolve(intent=\"audio.transcribe\")`"
+        )
+        self.assertTrue(section.startswith(expected_opening), section)
 
     def test_checker_accepts_additional_generic_locator_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

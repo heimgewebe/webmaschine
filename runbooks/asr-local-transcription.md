@@ -33,7 +33,7 @@ Dieses Runbook ist nur operative Guidance. Es ersetzt weder frische Runtime-Prü
 
 ## 1. Native Oberfläche vor Host-Locator prüfen
 
-Vor dem host-local Schritt zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt. Nur wenn keine solche Oberfläche passt, den installierten Maschinenvertrag über die host-local Capability-Auflösung lesen. Ein `blocked` ist kein Miss und darf nicht durch einen Ersatzpfad umgangen werden:
+Vor dem host-local Schritt zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt. Nur wenn keine solche Oberfläche passt, den installierten Maschinenvertrag über die host-local Capability-Auflösung lesen. Ein `blocked` ist kein Miss und darf nicht durch einen Ersatzpfad umgangen werden. Nur ein explizites `not_found` darf zu einer bereits deklarierten Spezialroute weiterführen:
 
 `grabowski_host_capability_resolve(intent="audio.transcribe")`
 
