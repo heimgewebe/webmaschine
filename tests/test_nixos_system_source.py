@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "11533e3708d88b2dcb1b780661a0c433e44dd74e85035bdc753a2caf3f956552"
+SOURCE_SNAPSHOT_SHA256 = "bfef0cc399493c17084f7e1055a3da197498b81964c380a43a497130fa4dd8f7"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -54,6 +54,11 @@ class T(unittest.TestCase):
         self.assertIn('= wayland &&', proof)
         self.assertIn('.alex-password-initialized.pending', proof)
         self.assertIn('heim-pc-test-chpasswd-count', proof)
+        self.assertIn('machine.start()', proof)
+        self.assertIn('interrupted.start()', proof)
+        self.assertNotIn('start_all()', proof)
+        self.assertIn('virtualisation.memorySize = 3072;', proof)
+        self.assertIn('pkgs.coreutils', proof)
 
     def test_root_lock_is_bound(self):
         self.assertEqual(hashlib.sha256((ROOT / "flake.lock").read_bytes()).hexdigest(), ROOT_LOCK_SHA256)

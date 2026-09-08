@@ -103,7 +103,7 @@ let
       fsType = "ext4";
     };
 
-    virtualisation.memorySize = 4096;
+    virtualisation.memorySize = 3072;
     virtualisation.cores = 2;
     documentation.enable = false;
     hardware.enableAllFirmware = lib.mkForce false;
@@ -116,7 +116,7 @@ let
     programs.nix-ld.enable = lib.mkForce false;
     programs.appimage.enable = lib.mkForce false;
     programs.appimage.binfmt = lib.mkForce false;
-    environment.systemPackages = lib.mkForce [ stageTool ];
+    environment.systemPackages = lib.mkForce [ stageTool pkgs.coreutils ];
   };
 in
 assert builtins.hashFile "sha256" ../hosts/heim-pc/default.nix == expectedHostSha256;
@@ -132,7 +132,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
-    start_all()
+    machine.start()
 
     def shadow_field(node):
         return node.succeed("getent shadow alex | cut -d: -f2").strip()
@@ -234,6 +234,8 @@ pkgs.testers.runNixOSTest {
         graphical_login(machine, "/persist/.heim-pc-test-password-recovery")
 
     with subtest("real post-mutation child timeout leaves pending and never replays"):
+        machine.shutdown()
+        interrupted.start()
         interrupted.wait_until_succeeds("systemctl is-failed heim-pc-firstboot-credentials.service", timeout=180)
         interrupted.succeed("heim-pc-firstboot-test-stage valid")
         interrupted.succeed("systemctl reset-failed heim-pc-firstboot-credentials.service")
@@ -250,7 +252,6 @@ pkgs.testers.runNixOSTest {
         interrupted.succeed("test $(cat /run/heim-pc-test-chpasswd-count) -eq 1")
         assert shadow_field(interrupted) == interrupted_hash
 
-    machine.shutdown()
     interrupted.shutdown()
   '';
 }
