@@ -255,11 +255,10 @@ def require_shadow_hash(expected_hash):
         os.close(fd)
 
 
-def is_initialized_modular_crypt(password_field):
+def is_initialized_default_yescrypt(password_field):
     if password_field.startswith("!"):
         password_field = password_field[1:]
-    fields = password_field.split("$")
-    return len(fields) >= 4 and fields[0] == "" and all(fields[1:])
+    return is_canonical_default_yescrypt(password_field)
 
 
 def require_marker_shadow_initialized():
@@ -267,10 +266,11 @@ def require_marker_shadow_initialized():
     try:
         # The marker lives on /persist while /etc/shadow lives on the root
         # subvolume. A root rollback can therefore retain the marker while
-        # restoring alex to a fresh bare lock. Do not pin later password
-        # rotations to yescrypt, but require a structurally plausible modular
-        # crypt field before releasing the login gate.
-        if not is_initialized_modular_crypt(observed_hash):
+        # restoring alex to a fresh bare lock. NixOS 26.05 pins both
+        # login.defs and PAM password changes to yescrypt, so later passwd
+        # rotations remain compatible while malformed or foreign hash schemes
+        # fail closed until an explicit credential-policy migration is reviewed.
+        if not is_initialized_default_yescrypt(observed_hash):
             fail(
                 "bootstrap marker exists but alex shadow state is uninitialized; "
                 "recovery required"

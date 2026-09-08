@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "5b6b1278613ba274419506f744fb320d4c79129e9ec1a0acb1a4c9171c46b321"
+SOURCE_SNAPSHOT_SHA256 = "a38f77939cdaed4ae799c66633d4ae0bf7541b9fd5d74cbe4487e25b302ef281"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -348,7 +348,7 @@ class T(unittest.TestCase):
             self.assertIn(original, program)
             program = program.replace(original, injected, 1)
         if inject_marker_shadow_path_replacement:
-            original = "        if not is_initialized_modular_crypt(observed_hash):"
+            original = "        if not is_initialized_default_yescrypt(observed_hash):"
             injected = (
                 "        replacement_path = SHADOW_PATH + \".injected-marker-replacement\"\n"
                 "        with open(SHADOW_PATH, \"rb\") as source_handle:\n"
@@ -359,7 +359,7 @@ class T(unittest.TestCase):
                 "            os.fsync(replacement_handle.fileno())\n"
                 "        os.chmod(replacement_path, 0o600)\n"
                 "        os.replace(replacement_path, SHADOW_PATH)\n"
-                "        if not is_initialized_modular_crypt(observed_hash):"
+                "        if not is_initialized_default_yescrypt(observed_hash):"
             )
             self.assertIn(original, program)
             program = program.replace(original, injected, 1)
@@ -457,7 +457,7 @@ class T(unittest.TestCase):
         self.assertIn("assert_shadow_path_identity", helper)
         self.assertIn("validate_shadow_metadata", helper)
         self.assertIn("require_marker_shadow_initialized", helper)
-        self.assertIn("is_initialized_modular_crypt", helper)
+        self.assertIn("is_initialized_default_yescrypt", helper)
         self.assertIn("os.O_NONBLOCK", helper)
         self.assertIn("follow_symlinks=False", helper)
         self.assertIn('PENDING_NAME = ".alex-password-initialized.pending"', helper)
@@ -753,7 +753,18 @@ class T(unittest.TestCase):
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
     def test_firstboot_marker_rejects_root_rollback_without_replay(self):
-        for rolled_back_hash in ("", "!", "!!", "*", "$garbage", "!$garbage", "$6$$hash", "$6$salt$"):
+        for rolled_back_hash in (
+            "",
+            "!",
+            "!!",
+            "*",
+            "$garbage",
+            "!$garbage",
+            "$6$$hash",
+            "$6$salt$",
+            "$6$salt$" + ("x" * 86),
+            "$y$j9T$" + ("s" * 21) + "0$short",
+        ):
             with self.subTest(rolled_back_hash=rolled_back_hash):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
@@ -773,6 +784,21 @@ class T(unittest.TestCase):
                     )
                     self.assertEqual(self._chpasswd_call_count(log), 1)
                     self.assertTrue(self._firstboot_marker_path(root).exists())
+
+    def test_firstboot_marker_accepts_only_pinned_nixos_yescrypt_family(self):
+        for locked in (False, True):
+            with self.subTest(locked=locked):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    bin_dir, shadow, log = self._firstboot_fixture(root)
+                    self._stage_firstboot_secret(root, self._synthetic_password_hash())
+                    first = self._run_firstboot_program(root, bin_dir, shadow, log)
+                    self.assertEqual(first.returncode, 0, first.stderr)
+                    current = self._synthetic_password_hash().strip()
+                    self._write_shadow(root, ("!" if locked else "") + current)
+                    repeat = self._run_firstboot_program(root, bin_dir, shadow, log)
+                    self.assertEqual(repeat.returncode, 0, repeat.stderr)
+                    self.assertEqual(self._chpasswd_call_count(log), 1)
 
     def test_firstboot_accepts_chpasswd_atomic_shadow_replacement(self):
         with tempfile.TemporaryDirectory() as tmp:
