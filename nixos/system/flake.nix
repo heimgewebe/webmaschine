@@ -378,6 +378,10 @@
             cp "$reportPath" "$out/profile-contract.json"
           '';
         integration = import ./tests/integration.nix { inherit pkgs; };
+        firstboot-credentials = import ./tests/firstboot-credentials.nix {
+          inherit pkgs;
+          sourceRevision = "eb260b0b82199e380d881b2436e403dcda64ca32";
+        };
         trust-zones = import ./tests/trust-zones.nix { inherit pkgs; };
       };
 

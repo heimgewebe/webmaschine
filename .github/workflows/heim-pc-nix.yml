@@ -54,4 +54,5 @@ jobs:
         run: >-
           nix build --no-link --no-update-lock-file --print-out-paths --print-build-logs
           .#checks.x86_64-linux.integration
+          .#checks.x86_64-linux.firstboot-credentials
           .#checks.x86_64-linux.trust-zones
