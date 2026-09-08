@@ -330,7 +330,12 @@
       "id": "target_specific_live_state",
       "surface": "primary_sources",
       "operation": "read_live_state_before_action",
-      "purpose": "verify the selected authority's live readiness and policy plus exact repository, pull request, CI, lease, task, process and runtime state before action; not-ready is not not-found and does not justify parallel replacement"
+      "readinessPolicy": {
+        "notReadyIsNotNotFound": true,
+        "notReadyAction": "recover_selected_authority",
+        "parallelReplacementAllowed": false
+      },
+      "purpose": "verify the selected authority's live readiness and policy plus exact repository, pull request, CI, lease, task, process and runtime state before action"
     }
   ],
   "truthSources": {

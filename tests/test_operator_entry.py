@@ -245,9 +245,13 @@ class OperatorEntryTests(unittest.TestCase):
             entry_by_id["specialized_route_resolution"]["precondition"],
             "host_capability_status_not_found",
         )
-        self.assertIn(
-            "not-ready is not not-found",
-            entry_by_id["target_specific_live_state"]["purpose"],
+        self.assertEqual(
+            entry_by_id["target_specific_live_state"]["readinessPolicy"],
+            {
+                "notReadyIsNotNotFound": True,
+                "notReadyAction": "recover_selected_authority",
+                "parallelReplacementAllowed": False,
+            },
         )
         self.assertIn("stableEcosystemSemantics", contract["truthSources"])
         self.assertIn("executionRuntimeLeases", contract["truthSources"])
@@ -419,6 +423,34 @@ class OperatorEntryTests(unittest.TestCase):
                 "specialized_route_resolution.precondition must require host capability not_found",
                 receipt["errors"],
             )
+
+    def test_checker_rejects_readiness_policy_that_allows_parallel_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
+            entry_by_id["target_specific_live_state"]["readinessPolicy"][
+                "parallelReplacementAllowed"
+            ] = True
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "target_specific_live_state.readinessPolicy must preserve canonical not-ready semantics",
+                receipt["errors"],
+            )
+
+    def test_reuse_before_build_guidance_matches_entry_sequence(self) -> None:
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        runbook = (ROOT / "runbooks/asr-local-transcription.md").read_text(encoding="utf-8")
+        self.assertIn("native typed Grabowski-Oberfläche", agents)
+        self.assertIn("keine solche native Oberfläche passt", agents)
+        self.assertIn("native typed Grabowski-Oberfläche", runbook)
+        self.assertIn("keine solche Oberfläche passt", runbook)
 
     def test_checker_accepts_additional_generic_locator_shape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

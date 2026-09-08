@@ -543,9 +543,13 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
     if specialized_route.get("precondition") != "host_capability_status_not_found":
         errors.append("specialized_route_resolution.precondition must require host capability not_found")
     live_state = entry_by_id.get("target_specific_live_state", {})
-    live_purpose = live_state.get("purpose")
-    if not isinstance(live_purpose, str) or "not-ready is not not-found" not in live_purpose:
-        errors.append("target_specific_live_state must preserve not-ready versus not-found semantics")
+    expected_readiness_policy = {
+        "notReadyIsNotNotFound": True,
+        "notReadyAction": "recover_selected_authority",
+        "parallelReplacementAllowed": False,
+    }
+    if live_state.get("readinessPolicy") != expected_readiness_policy:
+        errors.append("target_specific_live_state.readinessPolicy must preserve canonical not-ready semantics")
 
     truth_sources = _require_object(contract.get("truthSources"), "truthSources", errors)
     required_sources = {
