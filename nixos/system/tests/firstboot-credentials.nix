@@ -70,6 +70,10 @@ let
 
   commonNode = { lib, pkgs, ... }: {
     imports = [ hostModule ];
+    # runNixOSTest supplies pkgs and makes nixpkgs.config read-only. Reuse the
+    # exact already-evaluated test-package configuration instead of adding a
+    # second allowUnfree definition through the imported physical host module.
+    nixpkgs.config = lib.mkForce pkgs.config;
     _module.args = {
       self = { rev = sourceRevision; };
       heimPcProfile = {
