@@ -258,6 +258,35 @@
             proprietary = configs.heim-pc-physical-gate-proprietary.config;
             open = configs.heim-pc-physical-gate-open.config;
             vm = configs.heim-pc-vm.config;
+            credentialConflict = nixpkgs.lib.nixosSystem {
+              inherit system;
+              specialArgs = {
+                inherit self;
+                heimPcProfile = {
+                  physical = true;
+                  nvidia = true;
+                  nvidiaOpen = false;
+                  desktop = true;
+                  physicalGates = false;
+                };
+              };
+              modules = physicalHostModules ++ [
+                ({ ... }: {
+                  # Public sentinel only: prove that any declarative password
+                  # source conflicts with the out-of-store bootstrap contract.
+                  users.users.alex.initialHashedPassword = "!PUBLIC-TEST-ONLY";
+                })
+              ];
+            };
+            credentialConflictEval = builtins.tryEval
+              credentialConflict.config.system.build.toplevel.drvPath;
+            targetCredentialsUnset = builtins.all (value: value == null) [
+              target.users.users.alex.password
+              target.users.users.alex.hashedPassword
+              target.users.users.alex.hashedPasswordFile
+              target.users.users.alex.initialPassword
+              target.users.users.alex.initialHashedPassword
+            ];
             live = map (name: configs.${name}.config) [
               "heim-pc-live-gate-proprietary" "heim-pc-live-gate-open"
             ];
@@ -292,6 +321,8 @@
           assert storage target == storage proprietary && storage target == storage open;
           assert !target.heimPc.physicalGates.enable;
           assert proprietary.heimPc.physicalGates.enable && open.heimPc.physicalGates.enable;
+          assert targetCredentialsUnset;
+          assert !credentialConflictEval.success;
           assert builtins.all (c: c.hardware.cpu.amd.updateMicrocode
             && c.networking.networkmanager.enable
             && builtins.elem "networkmanager" c.users.users.alex.extraGroups

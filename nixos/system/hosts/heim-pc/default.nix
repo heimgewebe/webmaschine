@@ -14,6 +14,15 @@ let
     (heimPcProfile.physical or false)
     && (heimPcProfile.desktop or false)
     && builtins.hasAttr "/persist" config.fileSystems;
+  alexPasswordOptionsAreUnset =
+    let alex = config.users.users.alex;
+    in builtins.all (value: value == null) [
+      alex.password
+      alex.hashedPassword
+      alex.hashedPasswordFile
+      alex.initialPassword
+      alex.initialHashedPassword
+    ];
 
   firstBootCredentialSource = builtins.readFile ./firstboot-credentials.py;
   firstBootCredentialProgram = pkgs.writeText "heim-pc-firstboot-credentials.py" (
@@ -47,6 +56,10 @@ in
     {
       assertion = !(heimPcProfile.physical or false) || (heimPcProfile.desktop or false);
       message = "physical headless heim-pc profiles require an explicit credential design before evaluation";
+    }
+    {
+      assertion = !firstBootCredentialBootstrap || alexPasswordOptionsAreUnset;
+      message = "physical first-boot credential bootstrap forbids declarative alex password options";
     }
   ];
 
@@ -97,6 +110,7 @@ in
     path = [ pkgs.shadow ];
     serviceConfig = {
       Type = "oneshot";
+      TimeoutStartSec = "30s";
       ExecStart = "${pkgs.python3}/bin/python3 ${firstBootCredentialProgram}";
       RemainAfterExit = true;
       User = "root";

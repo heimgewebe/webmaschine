@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "e1156317789c1a2083c3b864a1a98fd2901fa3195faeae419276afb6d249e6cb"
+SOURCE_SNAPSHOT_SHA256 = "d8a87c5c24d24e9989a405150ae0b1dfd0e11fc50b5a88d9cfa43dab56fc3ce4"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -403,6 +403,23 @@ class T(unittest.TestCase):
         self.assertIn('before = [ "systemd-user-sessions.service" "display-manager.service" ];', host)
         self.assertIn('User = "root";', host)
         self.assertIn('Group = "root";', host)
+        self.assertIn('TimeoutStartSec = "30s";', host)
+        self.assertIn("alexPasswordOptionsAreUnset", host)
+        for option in (
+            "alex.password",
+            "alex.hashedPassword",
+            "alex.hashedPasswordFile",
+            "alex.initialPassword",
+            "alex.initialHashedPassword",
+        ):
+            self.assertIn(option, host)
+        self.assertIn(
+            "!firstBootCredentialBootstrap || alexPasswordOptionsAreUnset", host
+        )
+        self.assertIn("credentialConflict = nixpkgs.lib.nixosSystem", flake := (SOURCE / "flake.nix").read_text())
+        self.assertIn("credentialConflictEval = builtins.tryEval", flake)
+        self.assertIn("assert targetCredentialsUnset;", flake)
+        self.assertIn("assert !credentialConflictEval.success;", flake)
 
         self.assertIn("SOURCE_REVISION = @SOURCE_REVISION_JSON@", helper)
         self.assertIn("YESCRYPT_RE", helper)
@@ -441,7 +458,6 @@ class T(unittest.TestCase):
         self.assertNotIn("os.replace(", helper)
         self.assertIn('if marker != MARKER_BYTES:', helper)
         self.assertNotIn("passwd -S", helper)
-        self.assertNotIn("hashedPasswordFile", host)
         self.assertNotRegex(
             host,
             r"\b(?:initialHashedPassword|initialPassword|hashedPassword|password)\s*=",
@@ -585,7 +601,7 @@ class T(unittest.TestCase):
     def test_firstboot_chpasswd_failure_or_timeout_is_sticky_non_replay(self):
         for mode, expected_error, timeout in (
             ("nonzero", "setting alex password failed", None),
-            ("timeout", "setting alex password timed out", 0.05),
+            ("timeout", "setting alex password timed out", 0.5),
         ):
             with self.subTest(mode=mode):
                 with tempfile.TemporaryDirectory() as tmp:
