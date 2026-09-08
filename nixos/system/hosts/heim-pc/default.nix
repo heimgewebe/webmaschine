@@ -39,6 +39,12 @@ let
         "source_revision=" + SOURCE_REVISION + "\n"
     ).encode("ascii")
     YESCRYPT_RE = re.compile(r"^\$y\$j9T\$[./0-9A-Za-z]{22}\$[./0-9A-Za-z]{43}$")
+    CRYPT64_ALPHABET = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    # The contract uses a 16-byte salt and a 256-bit yescrypt checksum. crypt's
+    # little-endian base64 therefore leaves only 2 payload bits in salt[-1]
+    # and 4 payload bits in checksum[-1]; all padding bits must be zero.
+    YESCRYPT_SALT_LAST = frozenset(CRYPT64_ALPHABET[:4])
+    YESCRYPT_CHECKSUM_LAST = frozenset(CRYPT64_ALPHABET[:16])
     SOURCE_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
     NOFOLLOW = os.O_NOFOLLOW
     DIRECTORY = os.O_DIRECTORY
@@ -47,6 +53,19 @@ let
     def fail(message):
         print("heim-pc first-boot credential bootstrap failed: " + message, file=sys.stderr)
         raise SystemExit(1)
+
+
+    def is_canonical_default_yescrypt(password_hash):
+        if YESCRYPT_RE.fullmatch(password_hash) is None:
+            return False
+        _empty, algorithm, parameters, salt, checksum = password_hash.split("$")
+        return (
+            _empty == ""
+            and algorithm == "y"
+            and parameters == "j9T"
+            and salt[-1] in YESCRYPT_SALT_LAST
+            and checksum[-1] in YESCRYPT_CHECKSUM_LAST
+        )
 
 
     def checked_dir_fd(fd, label, exact_mode=None):
@@ -358,7 +377,7 @@ let
                         password_hash = secret[:-1].decode("ascii")
                     except UnicodeDecodeError:
                         fail("bootstrap secret is not ASCII")
-                    if YESCRYPT_RE.fullmatch(password_hash) is None:
+                    if not is_canonical_default_yescrypt(password_hash):
                         fail("bootstrap secret is not canonical default-cost yescrypt")
 
                     # Stage and fsync the actual marker inode before changing the

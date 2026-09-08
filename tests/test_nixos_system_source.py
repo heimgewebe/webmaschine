@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "ce3a91ca45598d55c4cb259d6b500caef8e8de88b71aa0fb24ee4f61ab402070"
+SOURCE_SNAPSHOT_SHA256 = "30097da8cc40d177686cb0f9c1520c5abca8ec4fe34922d74f4daeaf730255cf"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -303,7 +303,7 @@ class T(unittest.TestCase):
     @staticmethod
     def _synthetic_password_hash():
         # Canonical-shape yescrypt fixture only; it is not a reusable credential.
-        return "$y$j9T$" + ("s" * 22) + "$" + ("x" * 43) + "\n"
+        return "$y$j9T$" + ("s" * 21) + "0$" + ("x" * 42) + "A\n"
 
     @staticmethod
     def _shadow_hash(path):
@@ -331,6 +331,12 @@ class T(unittest.TestCase):
         self.assertIn('Group = "root";', host)
         self.assertIn("YESCRYPT_RE", host)
         self.assertIn(r'^\$y\$j9T\$', host)
+        self.assertIn('CRYPT64_ALPHABET = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"', host)
+        self.assertIn("YESCRYPT_SALT_LAST = frozenset(CRYPT64_ALPHABET[:4])", host)
+        self.assertIn("YESCRYPT_CHECKSUM_LAST = frozenset(CRYPT64_ALPHABET[:16])", host)
+        self.assertIn("is_canonical_default_yescrypt", host)
+        self.assertIn("salt[-1] in YESCRYPT_SALT_LAST", host)
+        self.assertIn("checksum[-1] in YESCRYPT_CHECKSUM_LAST", host)
         self.assertIn("SOURCE_REVISION_RE", host)
         self.assertIn("AUTHORITY_NAME", host)
         self.assertIn("AUTHORITY_BYTES", host)
@@ -422,11 +428,36 @@ class T(unittest.TestCase):
             self.assertIn("not bound to this exact source", wrong_revision.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
-            bad_cost = "$y$z9T$" + ("s" * 22) + "$" + ("x" * 43) + "\n"
+            bad_cost = "$y$z9T$" + ("s" * 21) + "0$" + ("x" * 42) + "A\n"
             self._stage_firstboot_secret(root, bad_cost)
             wrong_cost = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(wrong_cost.returncode, 0)
             self.assertIn("not canonical default-cost yescrypt", wrong_cost.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+    def test_firstboot_credential_program_rejects_noncanonical_crypt64_padding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+
+            bad_salt_padding = (
+                "$y$j9T$" + ("s" * 22) + "$" + ("x" * 42) + "A\n"
+            )
+            self._stage_firstboot_secret(root, bad_salt_padding)
+            salt_result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(salt_result.returncode, 0)
+            self.assertIn("not canonical default-cost yescrypt", salt_result.stderr)
+            self.assertEqual(self._shadow_hash(shadow), "!")
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+            bad_checksum_padding = (
+                "$y$j9T$" + ("s" * 21) + "0$" + ("x" * 43) + "\n"
+            )
+            self._stage_firstboot_secret(root, bad_checksum_padding)
+            checksum_result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(checksum_result.returncode, 0)
+            self.assertIn("not canonical default-cost yescrypt", checksum_result.stderr)
+            self.assertEqual(self._shadow_hash(shadow), "!")
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
     def test_firstboot_marker_publication_never_overwrites_concurrent_entry(self):
