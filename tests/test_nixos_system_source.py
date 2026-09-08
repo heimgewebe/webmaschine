@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "bfef0cc399493c17084f7e1055a3da197498b81964c380a43a497130fa4dd8f7"
+SOURCE_SNAPSHOT_SHA256 = "fa705bee6db410c3b8a6daa42a334be2ec18ef9ca7ad9ab22217ac9164834243"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -883,7 +883,9 @@ class T(unittest.TestCase):
             with self.subTest(entry=entry):
                 with tempfile.TemporaryDirectory() as tmp:
                     root = Path(tmp)
-                    bin_dir, shadow, log = self._firstboot_fixture(root)
+                    bin_dir, shadow, log = self._firstboot_fixture(
+                        root
+                    )
                     secret = self._stage_firstboot_secret(
                         root, self._synthetic_password_hash()
                     )
