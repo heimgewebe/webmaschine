@@ -10,10 +10,15 @@ let
   # enabled only for the current desktop-shaped, storage-backed physical
   # profiles. A future headless physical profile therefore fails closed until
   # it gets an explicit reviewed credential design.
-  firstBootCredentialBootstrap =
-    (heimPcProfile.physical or false)
-    && (heimPcProfile.desktop or false)
-    && builtins.hasAttr "/persist" config.fileSystems;
+  physicalDesktopProfile =
+    (heimPcProfile.physical or false) && (heimPcProfile.desktop or false);
+  persistConfigured = builtins.hasAttr "/persist" config.fileSystems;
+  firstBootCredentialBootstrap = physicalDesktopProfile && persistConfigured;
+  physicalPrototypeWithoutPersist =
+    physicalDesktopProfile
+    && !persistConfigured
+    && config.fileSystems."/".device
+      == "/dev/disk/by-label/NIXOS_PROTOTYPE_DO_NOT_INSTALL";
   alexPasswordOptionsAreUnset =
     let alex = config.users.users.alex;
     in builtins.all (value: value == null) [
@@ -56,6 +61,13 @@ in
     {
       assertion = !(heimPcProfile.physical or false) || (heimPcProfile.desktop or false);
       message = "physical headless heim-pc profiles require an explicit credential design before evaluation";
+    }
+    {
+      assertion =
+        !physicalDesktopProfile
+        || firstBootCredentialBootstrap
+        || physicalPrototypeWithoutPersist;
+      message = "physical desktop heim-pc profiles without /persist are allowed only for the explicit non-installable prototype";
     }
     {
       assertion = !firstBootCredentialBootstrap || alexPasswordOptionsAreUnset;

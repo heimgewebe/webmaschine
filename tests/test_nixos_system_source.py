@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "d8a87c5c24d24e9989a405150ae0b1dfd0e11fc50b5a88d9cfa43dab56fc3ce4"
+SOURCE_SNAPSHOT_SHA256 = "ff5cf24173379e5b4f6c8e9cb72e3f3a839c79aaebca8c55f8bb1350b82d617b"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -389,7 +389,9 @@ class T(unittest.TestCase):
         self.assertIn("builtins.replaceStrings", host)
         self.assertIn("(heimPcProfile.physical or false)", host)
         self.assertIn("(heimPcProfile.desktop or false)", host)
-        self.assertIn('builtins.hasAttr "/persist" config.fileSystems', host)
+        self.assertIn('persistConfigured = builtins.hasAttr "/persist" config.fileSystems;', host)
+        self.assertIn("physicalPrototypeWithoutPersist", host)
+        self.assertIn("NIXOS_PROTOTYPE_DO_NOT_INSTALL", host)
         self.assertIn("!firstBootCredentialBootstrap || sourceRevisionIsClean", host)
         self.assertIn("physical headless heim-pc profiles require an explicit credential design", host)
         self.assertIn("users.mutableUsers = true;", host)
@@ -418,8 +420,13 @@ class T(unittest.TestCase):
         )
         self.assertIn("credentialConflict = nixpkgs.lib.nixosSystem", flake := (SOURCE / "flake.nix").read_text())
         self.assertIn("credentialConflictEval = builtins.tryEval", flake)
+        self.assertIn("missingPersistConflict = nixpkgs.lib.nixosSystem", flake)
+        self.assertIn("missingPersistConflictEval = builtins.tryEval", flake)
+        self.assertIn("REAL-WITHOUT-PERSIST", flake)
         self.assertIn("assert targetCredentialsUnset;", flake)
         self.assertIn("assert !credentialConflictEval.success;", flake)
+        self.assertIn("assert !missingPersistConflictEval.success;", flake)
+        self.assertIn('builtins.hasAttr "heim-pc-firstboot-credentials" target.systemd.services', flake)
 
         self.assertIn("SOURCE_REVISION = @SOURCE_REVISION_JSON@", helper)
         self.assertIn("YESCRYPT_RE", helper)
