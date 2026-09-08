@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "30097da8cc40d177686cb0f9c1520c5abca8ec4fe34922d74f4daeaf730255cf"
+SOURCE_SNAPSHOT_SHA256 = "b50f670605eaae7417e48a5eab49b0bc2235c54f9e6d4795bf7f137109ba4dac"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -262,6 +262,10 @@ class T(unittest.TestCase):
     def _firstboot_marker_path(root):
         return root / "persist/heim-pc/bootstrap/alex-password-initialized"
 
+    @staticmethod
+    def _firstboot_pending_path(root):
+        return root / "persist/heim-pc/bootstrap/.alex-password-initialized.pending"
+
     def _run_firstboot_program(
         self,
         root,
@@ -340,6 +344,10 @@ class T(unittest.TestCase):
         self.assertIn("SOURCE_REVISION_RE", host)
         self.assertIn("AUTHORITY_NAME", host)
         self.assertIn("AUTHORITY_BYTES", host)
+        self.assertIn('PENDING_NAME = ".alex-password-initialized.pending"', host)
+        self.assertIn("tmp_name = PENDING_NAME", host)
+        self.assertIn("password_mutation_started = True", host)
+        self.assertIn("bootstrap pending intent exists; recovery required", host)
         self.assertIn("fcntl.flock", host)
         self.assertIn("NOFOLLOW = os.O_NOFOLLOW", host)
         self.assertIn("dir_fd=", host)
@@ -460,6 +468,29 @@ class T(unittest.TestCase):
             self.assertEqual(self._shadow_hash(shadow), "!")
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
+    def test_firstboot_stale_pending_intent_blocks_replay_from_bare_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+            secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            marker_namespace = root / "persist/heim-pc"
+            marker_namespace.mkdir(parents=True, exist_ok=True)
+            marker_namespace.chmod(0o700)
+            marker_dir = marker_namespace / "bootstrap"
+            marker_dir.mkdir(mode=0o700)
+            pending = self._firstboot_pending_path(root)
+            pending.write_bytes(b"schema_version=1\nuser=alex\nstate=initialized\n")
+            pending.chmod(0o600)
+
+            result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("bootstrap pending intent exists; recovery required", result.stderr)
+            self.assertEqual(self._shadow_hash(shadow), "!")
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+            self.assertTrue(pending.exists())
+            self.assertTrue(secret.exists())
+            self.assertTrue(self._firstboot_authority_path(root).exists())
+
     def test_firstboot_marker_publication_never_overwrites_concurrent_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -480,10 +511,11 @@ class T(unittest.TestCase):
             self.assertEqual(self._chpasswd_call_count(log), 1)
             self.assertFalse(secret.exists())
             self.assertFalse(self._firstboot_authority_path(root).exists())
+            self.assertTrue(self._firstboot_pending_path(root).exists())
 
             replay = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(replay.returncode, 0)
-            self.assertIn("bootstrap marker content mismatch", replay.stderr)
+            self.assertIn("bootstrap pending intent exists; recovery required", replay.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 1)
 
     def test_firstboot_bootstrap_lock_blocks_parallel_instance_before_password_mutation(self):
@@ -525,6 +557,7 @@ class T(unittest.TestCase):
                 marker.read_bytes(), b"schema_version=1\nuser=alex\nstate=initialized\n"
             )
             self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(self._firstboot_pending_path(root).exists())
             self.assertEqual(self._chpasswd_call_count(log), 1)
 
             # Marker means bootstrap is finished. A later password lock/rotation
@@ -587,13 +620,14 @@ class T(unittest.TestCase):
             self.assertEqual(self._shadow_hash(shadow), self._synthetic_password_hash().strip())
             self.assertTrue(secret.exists())
             self.assertTrue(self._firstboot_authority_path(root).exists())
+            self.assertTrue(self._firstboot_pending_path(root).exists())
             self.assertFalse(
                 (root / "persist/heim-pc/bootstrap/alex-password-initialized").exists()
             )
 
             second = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(second.returncode, 0)
-            self.assertIn("alex account is not in an initialization-compatible locked state", second.stderr)
+            self.assertIn("bootstrap pending intent exists; recovery required", second.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 1)
 
     def test_nix_and_python_provenance_contracts_both_require_40_hex(self):

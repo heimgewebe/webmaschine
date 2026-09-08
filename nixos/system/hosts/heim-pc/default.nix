@@ -28,6 +28,7 @@ let
     EXPECTED_UID = 0
     EXPECTED_GID = 0
     MARKER_NAME = "alex-password-initialized"
+    PENDING_NAME = ".alex-password-initialized.pending"
     LOCK_NAME = ".alex-password-bootstrap.lock"
     SECRET_NAME = "alex-password-hash"
     AUTHORITY_NAME = "alex-password-bootstrap-authority"
@@ -335,6 +336,12 @@ let
         try:
             lock_fd = acquire_bootstrap_lock(marker_dir_fd)
             try:
+                # PENDING_NAME is the durable mutation intent. Once a previous
+                # invocation reached chpasswd, normal boot must never infer from
+                # a possibly rolled-back shadow file that replay is safe.
+                if entry_exists(marker_dir_fd, PENDING_NAME):
+                    fail("bootstrap pending intent exists; recovery required")
+
                 if entry_exists(marker_dir_fd, MARKER_NAME):
                     validate_marker(marker_dir_fd)
                     secret_dir_fd = open_secret_dir(persist_fd, optional=True)
@@ -383,16 +390,24 @@ let
                     # Stage and fsync the actual marker inode before changing the
                     # password. This proves the marker directory is writable and
                     # keeps later publication to one create-if-absent link.
-                    tmp_name = ".alex-password-initialized.pending-" + str(os.getpid())
+                    tmp_name = PENDING_NAME
                     probe_name = ".alex-password-publish-probe-" + str(os.getpid())
                     publication_linked = False
+                    pending_created = False
+                    password_mutation_started = False
                     try:
-                        marker_fd = os.open(
-                            tmp_name,
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
-                            0o600,
-                            dir_fd=marker_dir_fd,
-                        )
+                        try:
+                            marker_fd = os.open(
+                                tmp_name,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+                                0o600,
+                                dir_fd=marker_dir_fd,
+                            )
+                        except FileExistsError:
+                            fail("bootstrap pending intent appeared; recovery required")
+                        except OSError:
+                            fail("bootstrap pending intent could not be created")
+                        pending_created = True
                         try:
                             write_all(marker_fd, MARKER_BYTES)
                             os.fsync(marker_fd)
@@ -420,6 +435,11 @@ let
                         if entry_exists(marker_dir_fd, MARKER_NAME):
                             fail("bootstrap marker appeared during preflight")
 
+                        # Crossing this boundary is intentionally sticky. An
+                        # error, timeout or power loss from here until durable
+                        # success must leave PENDING_NAME in place so a later
+                        # boot cannot replay chpasswd from a bare-lock shadow.
+                        password_mutation_started = True
                         try:
                             result = subprocess.run(
                                 ["chpasswd", "-e"],
@@ -489,7 +509,16 @@ let
                         publication_linked = False
                         validate_marker(marker_dir_fd)
                     finally:
-                        if not publication_linked and entry_exists(marker_dir_fd, tmp_name):
+                        # Cleanup is allowed only while we still know chpasswd
+                        # was never attempted. Once mutation starts, the durable
+                        # intent is recovery evidence and must survive every
+                        # non-success path.
+                        if (
+                            pending_created
+                            and not password_mutation_started
+                            and not publication_linked
+                            and entry_exists(marker_dir_fd, tmp_name)
+                        ):
                             remove_staging_file(marker_dir_fd, tmp_name)
                 finally:
                     os.close(secret_dir_fd)
