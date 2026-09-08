@@ -110,13 +110,27 @@ let
 
     # Keep the proof scoped to the credential and real desktop/PAM path; avoid
     # pulling unrelated prototype/operator workloads into this VM closure.
+    # mkForce also replaces NixOS' usual interactive command set, so retain the
+    # exact tools exercised by the VM test driver rather than relying on ambient
+    # systemPackages.
     services.pipewire.enable = lib.mkForce false;
     security.rtkit.enable = lib.mkForce false;
     virtualisation.podman.enable = lib.mkForce false;
     programs.nix-ld.enable = lib.mkForce false;
     programs.appimage.enable = lib.mkForce false;
     programs.appimage.binfmt = lib.mkForce false;
-    environment.systemPackages = lib.mkForce [ stageTool pkgs.coreutils ];
+    environment.systemPackages = lib.mkForce [
+      stageTool
+      pkgs.bashInteractive
+      pkgs.coreutils
+      pkgs.gawk
+      pkgs.glibc.bin
+      pkgs.gnugrep
+      pkgs.procps
+      pkgs.shadow
+      pkgs.systemd
+      pkgs.util-linux
+    ];
   };
 in
 assert builtins.hashFile "sha256" ../hosts/heim-pc/default.nix == expectedHostSha256;
