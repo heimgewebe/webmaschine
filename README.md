@@ -75,7 +75,10 @@ Für ChatGPT über Grabowski beginnt jede neue Operatorroute mit:
 4. Lesen des installierten JSON-Vertrags;
 5. Auflösen von `${HOME}` gegen das absolute Operator-Home; unaufgelöste Variablen blockieren Dateizugriffe;
 6. Klassifikation als Einzelrepo-, systemweiter, Host-, Task- oder Historienfall;
-7. gezieltes Lesen der referenzierten Primärquellen und abschließender zielbezogener Live-Read vor Mutation.
+7. zuerst eine bereits veröffentlichte native typed Grabowski-Oberfläche verwenden, wenn sie den Auftrag erfüllt;
+8. nur bei einem host-local Intent ohne passende native Oberfläche `grabowski_host_capability_resolve` verwenden; `blocked` stoppt, nur explizites `not_found` darf zu einer bereits deklarierten Spezialroute weiterführen, und non-host Intents hängen nicht vom Host-Vertrag ab;
+9. gezielt die im Vertrag referenzierten Primärquellen der ausgewählten Route lesen;
+10. danach die gewählte Authority sowie ihre Live-Policy, Readiness und den zielbezogenen Livezustand unmittelbar vor Ausführung erneut lesen; not-ready ist nicht not-found und rechtfertigt keinen parallelen Ersatz.
 
 ## Tunnel-Client-Profilprüfung
 

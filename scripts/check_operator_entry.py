@@ -501,12 +501,58 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         "operator_context",
         "local_entry",
         "scope_classification",
+        "native_capability_discovery",
         "capability_resolution",
+        "specialized_route_resolution",
         "source_resolution",
         "target_specific_live_state",
     }
     if not required_entry_ids.issubset(set(entry_ids)):
         errors.append("entrySequence is missing required entry steps")
+    required_discovery_order = [
+        "scope_classification",
+        "native_capability_discovery",
+        "capability_resolution",
+        "specialized_route_resolution",
+        "source_resolution",
+        "target_specific_live_state",
+    ]
+    if all(step in entry_ids for step in required_discovery_order):
+        discovery_start = entry_ids.index("scope_classification")
+        if (
+            entry_ids[discovery_start : discovery_start + len(required_discovery_order)]
+            != required_discovery_order
+        ):
+            errors.append("entrySequence discovery steps must preserve reuse-before-build order")
+    entry_by_id = {item.get("id"): item for item in entry_sequence if isinstance(item, dict)}
+    native_discovery = entry_by_id.get("native_capability_discovery", {})
+    if native_discovery.get("surface") != "grabowski_catalog":
+        errors.append("native_capability_discovery.surface must be grabowski_catalog")
+    if native_discovery.get("operation") != "prefer_existing_typed_surface":
+        errors.append("native_capability_discovery.operation must prefer the existing typed surface")
+    host_resolution = entry_by_id.get("capability_resolution", {})
+    if host_resolution.get("operation") != "resolve_host_capability_locator_if_no_native_surface":
+        errors.append("capability_resolution.operation must be conditional on no native typed surface")
+    expected_status_policy = {
+        "resolved": "select_host_authority",
+        "not_found": "continue_to_declared_specialized_routes",
+        "blocked": "stop_without_fallback",
+    }
+    if host_resolution.get("statusPolicy") != expected_status_policy:
+        errors.append("capability_resolution.statusPolicy must allow fallback only on explicit not_found")
+    specialized_route = entry_by_id.get("specialized_route_resolution", {})
+    if specialized_route.get("operation") != "follow_declared_specialized_route_if_present":
+        errors.append("specialized_route_resolution.operation is invalid")
+    if specialized_route.get("precondition") != "host_capability_status_not_found":
+        errors.append("specialized_route_resolution.precondition must require host capability not_found")
+    live_state = entry_by_id.get("target_specific_live_state", {})
+    expected_readiness_policy = {
+        "notReadyIsNotNotFound": True,
+        "notReadyAction": "recover_selected_authority",
+        "parallelReplacementAllowed": False,
+    }
+    if live_state.get("readinessPolicy") != expected_readiness_policy:
+        errors.append("target_specific_live_state.readinessPolicy must preserve canonical not-ready semantics")
 
     truth_sources = _require_object(contract.get("truthSources"), "truthSources", errors)
     required_sources = {
