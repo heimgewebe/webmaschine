@@ -224,8 +224,9 @@ class OperatorEntryTests(unittest.TestCase):
             "source_resolution",
             "target_specific_live_state",
         ]
+        discovery_start = entry_ids.index("scope_classification")
         self.assertEqual(
-            [item for item in entry_ids if item in discovery_order],
+            entry_ids[discovery_start : discovery_start + len(discovery_order)],
             discovery_order,
         )
         entry_by_id = {item["id"]: item for item in contract["entrySequence"]}
@@ -421,6 +422,36 @@ class OperatorEntryTests(unittest.TestCase):
             )
             self.assertIn(
                 "specialized_route_resolution.precondition must require host capability not_found",
+                receipt["errors"],
+            )
+
+    def test_checker_rejects_interposed_discovery_step(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            contract = json.loads(
+                (ROOT / "manifest/operator-entry.v1.json").read_text(encoding="utf-8")
+            )
+            entry_sequence = contract["entrySequence"]
+            native_index = next(
+                index
+                for index, item in enumerate(entry_sequence)
+                if item["id"] == "native_capability_discovery"
+            )
+            entry_sequence.insert(
+                native_index + 1,
+                {
+                    "id": "setup_per_request",
+                    "surface": "agent",
+                    "operation": "build_replacement_infrastructure",
+                },
+            )
+            contract_path = tmp_path / "operator-entry.v1.json"
+            contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            with patch.object(checker, "CONTRACT_PATH", contract_path):
+                receipt = checker.check(home=tmp_path, require_installed=False)
+            self.assertFalse(receipt["valid"])
+            self.assertIn(
+                "entrySequence discovery steps must preserve reuse-before-build order",
                 receipt["errors"],
             )
 

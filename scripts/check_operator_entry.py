@@ -518,8 +518,11 @@ def check(*, home: Path, require_installed: bool) -> dict[str, Any]:
         "target_specific_live_state",
     ]
     if all(step in entry_ids for step in required_discovery_order):
-        positions = [entry_ids.index(step) for step in required_discovery_order]
-        if positions != sorted(positions):
+        discovery_start = entry_ids.index("scope_classification")
+        if (
+            entry_ids[discovery_start : discovery_start + len(required_discovery_order)]
+            != required_discovery_order
+        ):
             errors.append("entrySequence discovery steps must preserve reuse-before-build order")
     entry_by_id = {item.get("id"): item for item in entry_sequence if isinstance(item, dict)}
     native_discovery = entry_by_id.get("native_capability_discovery", {})
