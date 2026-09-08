@@ -227,9 +227,6 @@ class T(unittest.TestCase):
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.chmod(marker_path, 0o600)
-            chmod_dir = os.environ.get("HEIM_PC_TEST_AFTER_CHPASSWD_CHMOD_DIR")
-            if chmod_dir:
-                os.chmod(chmod_dir, 0o500)
         """))
         chpasswd.chmod(0o700)
         return bin_dir, shadow, chpasswd_log
@@ -265,7 +262,15 @@ class T(unittest.TestCase):
     def _firstboot_marker_path(root):
         return root / "persist/heim-pc/bootstrap/alex-password-initialized"
 
-    def _run_firstboot_program(self, root, bin_dir, shadow, chpasswd_log, extra_env=None):
+    def _run_firstboot_program(
+        self,
+        root,
+        bin_dir,
+        shadow,
+        chpasswd_log,
+        extra_env=None,
+        inject_secret_unlink_failure=False,
+    ):
         program = self._firstboot_program()
         program = program.replace(
             'PERSIST_PATH = "/persist"', f'PERSIST_PATH = {str(root / "persist")!r}'
@@ -276,6 +281,11 @@ class T(unittest.TestCase):
         ).replace(
             "EXPECTED_GID = 0", f"EXPECTED_GID = {os.getgid()}"
         )
+        if inject_secret_unlink_failure:
+            original = 'os.unlink(SECRET_NAME, dir_fd=secret_dir_fd)'
+            injected = 'raise OSError("injected bootstrap staging consumption failure")'
+            self.assertIn(original, program)
+            program = program.replace(original, injected, 1)
         env = os.environ.copy()
         env["PATH"] = f"{bin_dir}:{env['PATH']}"
         env["HEIM_PC_TEST_SHADOW"] = str(shadow)
@@ -533,24 +543,23 @@ class T(unittest.TestCase):
             root = Path(tmp)
             bin_dir, shadow, log = self._firstboot_fixture(root)
             secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
-            secret_dir = secret.parent
-
             first = self._run_firstboot_program(
                 root,
                 bin_dir,
                 shadow,
                 log,
-                extra_env={"HEIM_PC_TEST_AFTER_CHPASSWD_CHMOD_DIR": str(secret_dir)},
+                inject_secret_unlink_failure=True,
             )
             self.assertNotEqual(first.returncode, 0)
             self.assertIn("consuming bootstrap staging material failed", first.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 1)
             self.assertEqual(self._shadow_hash(shadow), self._synthetic_password_hash().strip())
+            self.assertTrue(secret.exists())
+            self.assertTrue(self._firstboot_authority_path(root).exists())
             self.assertFalse(
                 (root / "persist/heim-pc/bootstrap/alex-password-initialized").exists()
             )
 
-            secret_dir.chmod(0o700)
             second = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(second.returncode, 0)
             self.assertIn("alex account is not in an initialization-compatible locked state", second.stderr)
