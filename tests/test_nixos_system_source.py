@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "b50f670605eaae7417e48a5eab49b0bc2235c54f9e6d4795bf7f137109ba4dac"
+SOURCE_SNAPSHOT_SHA256 = "dcd2f5c4e45b8af995fac9c3fed2313b9ce48833acd0a3c64b0374c57cbb0102"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -47,12 +47,13 @@ class T(unittest.TestCase):
         for path in files:
             relative = str(path.relative_to(SOURCE)).encode()
             digest.update(relative + b"\0" + path.read_bytes() + b"\0")
-        self.assertEqual(len(files), 21)
+        self.assertEqual(len(files), 22)
         self.assertEqual(digest.hexdigest(), SOURCE_SNAPSHOT_SHA256)
 
     def test_canonical_source_layout(self):
         for relative in (
             "flake.nix", "README.md", "hosts/heim-pc/default.nix",
+            "hosts/heim-pc/firstboot-credentials.py",
             "modules/audio.nix", "modules/backup.nix", "modules/bureau.nix",
             "modules/containers.nix", "modules/desktop.nix", "modules/development.nix",
             "modules/grabowski.nix", "modules/live-media.nix", "modules/networking.nix",
@@ -158,15 +159,10 @@ class T(unittest.TestCase):
         self.assertIn("su -s /bin/sh -c 'grabowski-demo-operator status' alex", integration)
 
     def _firstboot_program(self):
-        host = (SOURCE / "hosts/heim-pc/default.nix").read_text()
-        match = re.search(
-            r'  firstBootCredentialProgram = pkgs\.writeText "heim-pc-firstboot-credentials\.py" \'\'\n(?P<body>.*?)\n  \'\';\nin\n\{',
-            host,
-            re.S,
-        )
-        self.assertIsNotNone(match)
-        return textwrap.dedent(match.group("body")).replace(
-            "SOURCE_REVISION = ${builtins.toJSON sourceRevision}",
+        helper = (SOURCE / "hosts/heim-pc/firstboot-credentials.py").read_text()
+        self.assertEqual(helper.count("SOURCE_REVISION = @SOURCE_REVISION_JSON@"), 1)
+        return helper.replace(
+            "SOURCE_REVISION = @SOURCE_REVISION_JSON@",
             f"SOURCE_REVISION = {TEST_SOURCE_REVISION!r}",
         )
 
@@ -190,6 +186,7 @@ class T(unittest.TestCase):
             #!/usr/bin/python3
             import os
             import sys
+            import time
 
             if sys.argv[1:] != ["-e"]:
                 raise SystemExit(64)
@@ -202,6 +199,16 @@ class T(unittest.TestCase):
                 raise SystemExit(66)
             if user != "alex" or not password_hash.startswith("$"):
                 raise SystemExit(67)
+            with open(os.environ["HEIM_PC_TEST_CHPASSWD_LOG"], "a", encoding="utf-8") as handle:
+                handle.write("called\\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            mode = os.environ.get("HEIM_PC_TEST_CHPASSWD_MODE", "success")
+            if mode == "nonzero":
+                raise SystemExit(73)
+            if mode == "timeout":
+                time.sleep(float(os.environ.get("HEIM_PC_TEST_CHPASSWD_SLEEP", "1")))
+
             path = os.environ["HEIM_PC_TEST_SHADOW"]
             rows = []
             found = 0
@@ -214,12 +221,20 @@ class T(unittest.TestCase):
                     rows.append(":".join(fields))
             if found != 1:
                 raise SystemExit(68)
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write("\\n".join(rows) + "\\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            with open(os.environ["HEIM_PC_TEST_CHPASSWD_LOG"], "a", encoding="utf-8") as handle:
-                handle.write("called\\n")
+            payload = "\\n".join(rows) + "\\n"
+            if mode == "replace-shadow":
+                replacement = path + ".replacement"
+                with open(replacement, "x", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(replacement, 0o600)
+                os.replace(replacement, path)
+            else:
+                with open(path, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
             marker_path = os.environ.get("HEIM_PC_TEST_AFTER_CHPASSWD_MARKER_PATH")
             if marker_path:
                 with open(marker_path, "x", encoding="utf-8") as handle:
@@ -247,6 +262,7 @@ class T(unittest.TestCase):
             "user=alex\n"
             "action=initialize-password\n"
             f"source_revision={authority_revision}\n"
+            f"password_hash_sha256={hashlib.sha256(content.encode()).hexdigest()}\n"
         )
         authority.chmod(0o600)
         secret = secret_dir / "alex-password-hash"
@@ -274,6 +290,8 @@ class T(unittest.TestCase):
         chpasswd_log,
         extra_env=None,
         inject_secret_unlink_failure=False,
+        chpasswd_timeout_seconds=None,
+        inject_shadow_path_replacement=False,
     ):
         program = self._firstboot_program()
         program = program.replace(
@@ -288,6 +306,27 @@ class T(unittest.TestCase):
         if inject_secret_unlink_failure:
             original = 'os.unlink(SECRET_NAME, dir_fd=secret_dir_fd)'
             injected = 'raise OSError("injected bootstrap staging consumption failure")'
+            self.assertIn(original, program)
+            program = program.replace(original, injected, 1)
+        if chpasswd_timeout_seconds is not None:
+            self.assertIn("timeout=10", program)
+            program = program.replace(
+                "timeout=10", f"timeout={chpasswd_timeout_seconds!r}", 1
+            )
+        if inject_shadow_path_replacement:
+            original = "        fsync_verified_shadow(fd, identity)"
+            injected = (
+                "        replacement_path = SHADOW_PATH + \".injected-replacement\"\n"
+                "        with open(SHADOW_PATH, \"rb\") as source_handle:\n"
+                "            payload = source_handle.read()\n"
+                "        with open(replacement_path, \"xb\") as replacement_handle:\n"
+                "            replacement_handle.write(payload)\n"
+                "            replacement_handle.flush()\n"
+                "            os.fsync(replacement_handle.fileno())\n"
+                "        os.chmod(replacement_path, 0o600)\n"
+                "        os.replace(replacement_path, SHADOW_PATH)\n"
+                "        fsync_verified_shadow(fd, identity)"
+            )
             self.assertIn(original, program)
             program = program.replace(original, injected, 1)
         env = os.environ.copy()
@@ -320,47 +359,61 @@ class T(unittest.TestCase):
 
     def test_firstboot_credential_source_contract_is_fail_closed_and_out_of_store(self):
         host = (SOURCE / "hosts/heim-pc/default.nix").read_text()
+        helper = (SOURCE / "hosts/heim-pc/firstboot-credentials.py").read_text()
         readme = (SOURCE / "README.md").read_text()
         self.assertIn("firstBootCredentialBootstrap =", host)
+        self.assertIn("builtins.readFile ./firstboot-credentials.py", host)
+        self.assertIn("builtins.replaceStrings", host)
         self.assertIn("(heimPcProfile.physical or false)", host)
         self.assertIn("(heimPcProfile.desktop or false)", host)
         self.assertIn('builtins.hasAttr "/persist" config.fileSystems', host)
+        self.assertIn("!firstBootCredentialBootstrap || sourceRevisionIsClean", host)
+        self.assertIn("physical headless heim-pc profiles require an explicit credential design", host)
         self.assertIn("users.mutableUsers = true;", host)
+        self.assertIn("uid = 1000;", host)
         self.assertIn("heim-pc-firstboot-credentials", host)
+        self.assertIn("ExecStart =", host)
+        self.assertNotIn("script = ''", host)
         self.assertIn("services.getty.autologinUser = lib.mkIf (", host)
         self.assertIn("!(heimPcProfile.physical or false)", host)
         self.assertIn('requiredBy = [ "systemd-user-sessions.service" "display-manager.service" ];', host)
         self.assertIn('before = [ "systemd-user-sessions.service" "display-manager.service" ];', host)
         self.assertIn('User = "root";', host)
         self.assertIn('Group = "root";', host)
-        self.assertIn("YESCRYPT_RE", host)
-        self.assertIn(r'^\$y\$j9T\$', host)
-        self.assertIn('CRYPT64_ALPHABET = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"', host)
-        self.assertIn("YESCRYPT_SALT_LAST = frozenset(CRYPT64_ALPHABET[:4])", host)
-        self.assertIn("YESCRYPT_CHECKSUM_LAST = frozenset(CRYPT64_ALPHABET[:16])", host)
-        self.assertIn("is_canonical_default_yescrypt", host)
-        self.assertIn("salt[-1] in YESCRYPT_SALT_LAST", host)
-        self.assertIn("checksum[-1] in YESCRYPT_CHECKSUM_LAST", host)
-        self.assertIn("SOURCE_REVISION_RE", host)
-        self.assertIn("AUTHORITY_NAME", host)
-        self.assertIn("AUTHORITY_BYTES", host)
-        self.assertIn('PENDING_NAME = ".alex-password-initialized.pending"', host)
-        self.assertIn("tmp_name = PENDING_NAME", host)
-        self.assertIn("password_mutation_started = True", host)
-        self.assertIn("bootstrap pending intent exists; recovery required", host)
-        self.assertIn("fcntl.flock", host)
-        self.assertIn("NOFOLLOW = os.O_NOFOLLOW", host)
-        self.assertIn("dir_fd=", host)
-        self.assertIn("assert_entry_identity", host)
-        self.assertIn("os.fsync", host)
-        self.assertIn("timeout=10", host)
-        self.assertIn("write_all(marker_fd, MARKER_BYTES)", host)
-        self.assertIn('current_hash not in {"!", "!!", "*"}', host)
-        self.assertIn("require_shadow_hash(password_hash)", host)
-        self.assertIn("os.link(", host)
-        self.assertNotIn("os.replace(", host)
-        self.assertIn('if marker != MARKER_BYTES:', host)
-        self.assertNotIn("passwd -S", host)
+
+        self.assertIn("SOURCE_REVISION = @SOURCE_REVISION_JSON@", helper)
+        self.assertIn("YESCRYPT_RE", helper)
+        self.assertIn(r'^\$y\$j9T\$', helper)
+        self.assertIn('CRYPT64_ALPHABET = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"', helper)
+        self.assertIn("YESCRYPT_SALT_LAST = frozenset(CRYPT64_ALPHABET[:4])", helper)
+        self.assertIn("YESCRYPT_CHECKSUM_LAST = frozenset(CRYPT64_ALPHABET[:16])", helper)
+        self.assertIn("is_canonical_default_yescrypt", helper)
+        self.assertIn("salt[-1] in YESCRYPT_SALT_LAST", helper)
+        self.assertIn("checksum[-1] in YESCRYPT_CHECKSUM_LAST", helper)
+        self.assertIn("SOURCE_REVISION_RE", helper)
+        self.assertIn("AUTHORITY_NAME", helper)
+        self.assertNotIn("AUTHORITY_BYTES", helper)
+        self.assertIn("expected_authority_bytes", helper)
+        self.assertIn("password_hash_sha256=", helper)
+        self.assertIn("assert_shadow_path_identity", helper)
+        self.assertIn("follow_symlinks=False", helper)
+        self.assertIn('PENDING_NAME = ".alex-password-initialized.pending"', helper)
+        self.assertIn("tmp_name = PENDING_NAME", helper)
+        self.assertIn("password_mutation_started = True", helper)
+        self.assertIn("bootstrap pending intent exists; recovery required", helper)
+        self.assertIn("fcntl.flock", helper)
+        self.assertIn("NOFOLLOW = os.O_NOFOLLOW", helper)
+        self.assertIn("dir_fd=", helper)
+        self.assertIn("assert_entry_identity", helper)
+        self.assertIn("os.fsync", helper)
+        self.assertIn("timeout=10", helper)
+        self.assertIn("write_all(marker_fd, MARKER_BYTES)", helper)
+        self.assertIn('current_hash not in {"!", "!!", "*"}', helper)
+        self.assertIn("require_shadow_hash(password_hash)", helper)
+        self.assertIn("os.link(", helper)
+        self.assertNotIn("os.replace(", helper)
+        self.assertIn('if marker != MARKER_BYTES:', helper)
+        self.assertNotIn("passwd -S", helper)
         self.assertNotIn("hashedPasswordFile", host)
         self.assertNotRegex(
             host,
@@ -433,7 +486,7 @@ class T(unittest.TestCase):
             )
             wrong_revision = self._run_firstboot_program(root, bin_dir, shadow, log)
             self.assertNotEqual(wrong_revision.returncode, 0)
-            self.assertIn("not bound to this exact source", wrong_revision.stderr)
+            self.assertIn("not bound to this exact source and hash", wrong_revision.stderr)
             self.assertEqual(self._chpasswd_call_count(log), 0)
 
             bad_cost = "$y$z9T$" + ("s" * 21) + "0$" + ("x" * 42) + "A\n"
@@ -490,6 +543,120 @@ class T(unittest.TestCase):
             self.assertTrue(pending.exists())
             self.assertTrue(secret.exists())
             self.assertTrue(self._firstboot_authority_path(root).exists())
+
+    def test_firstboot_bare_lock_variants_are_supported(self):
+        for virgin in ("!!", "*"):
+            with self.subTest(virgin=virgin):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    bin_dir, shadow, log = self._firstboot_fixture(root, initial_hash=virgin)
+                    self._stage_firstboot_secret(root, self._synthetic_password_hash())
+                    result = self._run_firstboot_program(root, bin_dir, shadow, log)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self._chpasswd_call_count(log), 1)
+
+    def test_firstboot_chpasswd_failure_or_timeout_is_sticky_non_replay(self):
+        for mode, expected_error, timeout in (
+            ("nonzero", "setting alex password failed", None),
+            ("timeout", "setting alex password timed out", 0.05),
+        ):
+            with self.subTest(mode=mode):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    bin_dir, shadow, log = self._firstboot_fixture(root)
+                    secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+                    result = self._run_firstboot_program(
+                        root,
+                        bin_dir,
+                        shadow,
+                        log,
+                        extra_env={"HEIM_PC_TEST_CHPASSWD_MODE": mode},
+                        chpasswd_timeout_seconds=timeout,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(expected_error, result.stderr)
+                    self.assertEqual(self._shadow_hash(shadow), "!")
+                    self.assertEqual(self._chpasswd_call_count(log), 1)
+                    self.assertTrue(secret.exists())
+                    self.assertTrue(self._firstboot_authority_path(root).exists())
+                    self.assertTrue(self._firstboot_pending_path(root).exists())
+
+                    replay = self._run_firstboot_program(root, bin_dir, shadow, log)
+                    self.assertNotEqual(replay.returncode, 0)
+                    self.assertIn("bootstrap pending intent exists; recovery required", replay.stderr)
+                    self.assertEqual(self._chpasswd_call_count(log), 1)
+
+    def test_firstboot_rejects_unsafe_persist_and_marker_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+            self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            (root / "persist").chmod(0o775)
+            result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("persist mount is group/other writable", result.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+            self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            namespace = root / "persist/heim-pc"
+            namespace.mkdir(mode=0o700)
+            marker_dir = namespace / "bootstrap"
+            marker_dir.mkdir(mode=0o755)
+            marker_dir.chmod(0o755)
+            result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("bootstrap marker directory mode mismatch", result.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+    def test_firstboot_shadow_path_replacement_is_detected_before_durable_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+            secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            result = self._run_firstboot_program(
+                root,
+                bin_dir,
+                shadow,
+                log,
+                inject_shadow_path_replacement=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("verified shadow path identity changed", result.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 1)
+            self.assertTrue(secret.exists())
+            self.assertTrue(self._firstboot_authority_path(root).exists())
+            self.assertTrue(self._firstboot_pending_path(root).exists())
+
+    def test_firstboot_authority_rejects_extra_whitespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+            self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            authority = self._firstboot_authority_path(root)
+            authority.write_text(authority.read_text() + "\n")
+            authority.chmod(0o600)
+            result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not bound to this exact source and hash", result.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 0)
+
+    def test_firstboot_authority_binds_exact_hash_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bin_dir, shadow, log = self._firstboot_fixture(root)
+            secret = self._stage_firstboot_secret(root, self._synthetic_password_hash())
+            original = secret.read_text()
+            replacement = original.replace("x", "y", 1)
+            self.assertNotEqual(original, replacement)
+            secret.write_text(replacement)
+            secret.chmod(0o600)
+            result = self._run_firstboot_program(root, bin_dir, shadow, log)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("not bound to this exact source and hash", result.stderr)
+            self.assertEqual(self._chpasswd_call_count(log), 0)
 
     def test_firstboot_marker_publication_never_overwrites_concurrent_entry(self):
         with tempfile.TemporaryDirectory() as tmp:
