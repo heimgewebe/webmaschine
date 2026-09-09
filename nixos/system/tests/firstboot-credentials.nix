@@ -153,22 +153,26 @@ pkgs.testers.runNixOSTest {
 
     def wait_for_alex_wayland(node):
         node.wait_until_succeeds(
-            "for id in $(loginctl list-sessions --no-legend | awk '$3 == \\\"alex\\\" {print $1}'); do "
-            "test \\\"$(loginctl show-session $id -p Type --value)\\\" = wayland && "
-            "test \\\"$(loginctl show-session $id -p Active --value)\\\" = yes && exit 0; "
-            "done; exit 1",
+            r"""for id in $(loginctl list-sessions --no-legend | awk '$3 == "alex" {print $1}'); do
+  test "$(loginctl show-session "$id" -p Type --value)" = wayland &&
+  test "$(loginctl show-session "$id" -p Active --value)" = yes && exit 0
+done
+exit 1""",
             timeout=180,
         )
 
     def graphical_login(node, password_path):
         node.wait_for_unit("display-manager.service", timeout=180)
         node.wait_until_succeeds("pgrep -u sddm -f sddm-greeter", timeout=180)
+        node.wait_until_succeeds(
+            r"""journalctl -b --no-pager -o cat | grep -Fq 'Adding view for '""",
+            timeout=180,
+        )
         # succeed() logs the command but does not log successful stdout. Never
         # call send_chars(): it logs repr(chars). send_key(log=False) keeps the
         # runtime-only password out of the public VM-test log.
         password = node.succeed(f"cat {password_path}").strip()
         assert password
-        node.sleep(3)
         for char in password:
             node.send_key(char, log=False)
         node.send_key("ret")
