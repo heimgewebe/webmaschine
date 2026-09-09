@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "fa705bee6db410c3b8a6daa42a334be2ec18ef9ca7ad9ab22217ac9164834243"
+SOURCE_SNAPSHOT_SHA256 = "c6b01e83f06e526332e389ff9a227744543c5bbaceaf6caa251536f8673b8a62"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 

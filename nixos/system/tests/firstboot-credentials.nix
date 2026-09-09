@@ -125,6 +125,7 @@ let
       pkgs.coreutils
       pkgs.gawk
       pkgs.glibc.bin
+      pkgs.getent
       pkgs.gnugrep
       pkgs.procps
       pkgs.shadow
