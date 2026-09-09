@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "c6b01e83f06e526332e389ff9a227744543c5bbaceaf6caa251536f8673b8a62"
+SOURCE_SNAPSHOT_SHA256 = "38037c6f3c58cd3f74f6cafa331f7a885fe20df311051baa2d336ad0dff29a9a"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -59,6 +59,8 @@ class T(unittest.TestCase):
         self.assertNotIn('start_all()', proof)
         self.assertIn('virtualisation.memorySize = 3072;', proof)
         self.assertIn('pkgs.coreutils', proof)
+        self.assertIn('pkgs.getent', proof)
+        self.assertNotIn('environment.systemPackages = lib.mkForce', proof)
 
     def test_root_lock_is_bound(self):
         self.assertEqual(hashlib.sha256((ROOT / "flake.lock").read_bytes()).hexdigest(), ROOT_LOCK_SHA256)

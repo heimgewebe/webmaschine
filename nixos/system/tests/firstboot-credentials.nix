@@ -108,18 +108,17 @@ let
     documentation.enable = false;
     hardware.enableAllFirmware = lib.mkForce false;
 
-    # Keep the proof scoped to the credential and real desktop/PAM path; avoid
-    # pulling unrelated prototype/operator workloads into this VM closure.
-    # mkForce also replaces NixOS' usual interactive command set, so retain the
-    # exact tools exercised by the VM test driver rather than relying on ambient
-    # systemPackages.
+    # Keep the proof scoped to the credential and real desktop/PAM path. Heavy
+    # unrelated services stay disabled below, but retain normal NixOS package
+    # composition because SDDM and Plasma publish runtime dependencies through
+    # environment.systemPackages. Add the test-driver tools without replacing it.
     services.pipewire.enable = lib.mkForce false;
     security.rtkit.enable = lib.mkForce false;
     virtualisation.podman.enable = lib.mkForce false;
     programs.nix-ld.enable = lib.mkForce false;
     programs.appimage.enable = lib.mkForce false;
     programs.appimage.binfmt = lib.mkForce false;
-    environment.systemPackages = lib.mkForce [
+    environment.systemPackages = [
       stageTool
       pkgs.bashInteractive
       pkgs.coreutils
