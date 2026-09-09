@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "fa705bee6db410c3b8a6daa42a334be2ec18ef9ca7ad9ab22217ac9164834243"
+SOURCE_SNAPSHOT_SHA256 = "42384663fc74d8509e97e1c61e5177fbfd79da6960eecc3b43693ad56e3669c9"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -50,7 +50,7 @@ class T(unittest.TestCase):
         self.assertNotIn('.send_chars(', proof)
         self.assertIn('systemctl is-failed heim-pc-firstboot-credentials.service', proof)
         self.assertIn('display-manager.service', proof)
-        self.assertIn('show-session $id -p Type --value', proof)
+        self.assertIn('show-session \"$id\" -p Type --value', proof)
         self.assertIn('= wayland &&', proof)
         self.assertIn('.alex-password-initialized.pending', proof)
         self.assertIn('heim-pc-test-chpasswd-count', proof)
@@ -59,6 +59,12 @@ class T(unittest.TestCase):
         self.assertNotIn('start_all()', proof)
         self.assertIn('virtualisation.memorySize = 3072;', proof)
         self.assertIn('pkgs.coreutils', proof)
+        self.assertIn('pkgs.getent', proof)
+        self.assertIn('awk \'$3 == "alex" {print $1}\'', proof)
+        self.assertIn("grep -Fq 'Adding view for '", proof)
+        self.assertNotIn('environment.systemPackages = lib.mkForce', proof)
+        test_script_source = proof.split("  testScript = ''\n", 1)[1].rsplit("  '';\n}", 1)[0]
+        self.assertTrue(all(not line.strip() or line.startswith("    ") for line in test_script_source.splitlines()))
 
     def test_root_lock_is_bound(self):
         self.assertEqual(hashlib.sha256((ROOT / "flake.lock").read_bytes()).hexdigest(), ROOT_LOCK_SHA256)
