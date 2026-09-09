@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "nixos" / "system"
-SOURCE_SNAPSHOT_SHA256 = "5525723ceb8cab7a55b9cdf0de291335860afa75fa1f27916640539d7b989eb0"
+SOURCE_SNAPSHOT_SHA256 = "42384663fc74d8509e97e1c61e5177fbfd79da6960eecc3b43693ad56e3669c9"
 ROOT_LOCK_SHA256 = "19d83aededafff8a80ca354e4fba18c1470d638b683079bd983639eb5719e26d"
 TEST_SOURCE_REVISION = "a" * 40
 
@@ -63,6 +63,8 @@ class T(unittest.TestCase):
         self.assertIn('awk \'$3 == "alex" {print $1}\'', proof)
         self.assertIn("grep -Fq 'Adding view for '", proof)
         self.assertNotIn('environment.systemPackages = lib.mkForce', proof)
+        test_script_source = proof.split("  testScript = ''\n", 1)[1].rsplit("  '';\n}", 1)[0]
+        self.assertTrue(all(not line.strip() or line.startswith("    ") for line in test_script_source.splitlines()))
 
     def test_root_lock_is_bound(self):
         self.assertEqual(hashlib.sha256((ROOT / "flake.lock").read_bytes()).hexdigest(), ROOT_LOCK_SHA256)

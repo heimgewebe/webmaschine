@@ -154,10 +154,10 @@ pkgs.testers.runNixOSTest {
     def wait_for_alex_wayland(node):
         node.wait_until_succeeds(
             r"""for id in $(loginctl list-sessions --no-legend | awk '$3 == "alex" {print $1}'); do
-  test "$(loginctl show-session "$id" -p Type --value)" = wayland &&
-  test "$(loginctl show-session "$id" -p Active --value)" = yes && exit 0
-done
-exit 1""",
+            test "$(loginctl show-session "$id" -p Type --value)" = wayland &&
+            test "$(loginctl show-session "$id" -p Active --value)" = yes && exit 0
+            done
+            exit 1""",
             timeout=180,
         )
 
